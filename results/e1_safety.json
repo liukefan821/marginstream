@@ -1,0 +1,90 @@
+[
+  {
+    "seed": 1,
+    "accepted": 95,
+    "rejected": 385,
+    "stale_rejected": 75,
+    "lease_exhausted": 162,
+    "violations": 0,
+    "final_M": 11712,
+    "final_equity": 13527,
+    "subadd_gap": 1
+  },
+  {
+    "seed": 2,
+    "accepted": 118,
+    "rejected": 362,
+    "stale_rejected": 96,
+    "lease_exhausted": 157,
+    "violations": 0,
+    "final_M": 10456,
+    "final_equity": 13527,
+    "subadd_gap": 0
+  },
+  {
+    "seed": 3,
+    "accepted": 99,
+    "rejected": 381,
+    "stale_rejected": 97,
+    "lease_exhausted": 160,
+    "violations": 0,
+    "final_M": 10578,
+    "final_equity": 13527,
+    "subadd_gap": 0
+  },
+  {
+    "seed": 4,
+    "accepted": 106,
+    "rejected": 374,
+    "stale_rejected": 122,
+    "lease_exhausted": 190,
+    "violations": 0,
+    "final_M": 12249,
+    "final_equity": 13527,
+    "subadd_gap": 1
+  },
+  {
+    "seed": 5,
+    "accepted": 107,
+    "rejected": 373,
+    "stale_rejected": 108,
+    "lease_exhausted": 144,
+    "violations": 0,
+    "final_M": 11665,
+    "final_equity": 13527,
+    "subadd_gap": 0
+  },
+  {
+    "seed": 6,
+    "accepted": 104,
+    "rejected": 376,
+    "stale_rejected": 97,
+    "lease_exhausted": 170,
+    "violations": 0,
+    "final_M": 11161,
+    "final_equity": 13527,
+    "subadd_gap": 0
+  },
+  {
+    "seed": 7,
+    "accepted": 96,
+    "rejected": 384,
+    "stale_rejected": 82,
+    "lease_exhausted": 97,
+    "violations": 0,
+    "final_M": 11639,
+    "final_equity": 13527,
+    "subadd_gap": 0
+  },
+  {
+    "seed": 8,
+    "accepted": 110,
+    "rejected": 370,
+    "stale_rejected": 92,
+    "lease_exhausted": 182,
+    "violations": 0,
+    "final_M": 10451,
+    "final_equity": 13527,
+    "subadd_gap": 1
+  }
+]

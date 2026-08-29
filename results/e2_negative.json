@@ -1,0 +1,58 @@
+[
+  {
+    "seed": 1,
+    "accepted": 154,
+    "violations": 0,
+    "final_M": 12331,
+    "final_equity": 13527
+  },
+  {
+    "seed": 2,
+    "accepted": 154,
+    "violations": 0,
+    "final_M": 7178,
+    "final_equity": 13527
+  },
+  {
+    "seed": 3,
+    "accepted": 149,
+    "violations": 0,
+    "final_M": 10486,
+    "final_equity": 13527
+  },
+  {
+    "seed": 4,
+    "accepted": 139,
+    "violations": 0,
+    "final_M": 11630,
+    "final_equity": 13527
+  },
+  {
+    "seed": 5,
+    "accepted": 169,
+    "violations": 0,
+    "final_M": 11049,
+    "final_equity": 13527
+  },
+  {
+    "seed": 6,
+    "accepted": 144,
+    "violations": 0,
+    "final_M": 11071,
+    "final_equity": 13527
+  },
+  {
+    "seed": 7,
+    "accepted": 160,
+    "violations": 0,
+    "final_M": 11252,
+    "final_equity": 13527
+  },
+  {
+    "seed": 8,
+    "accepted": 152,
+    "violations": 0,
+    "final_M": 10545,
+    "final_equity": 13527
+  }
+]
