@@ -122,8 +122,10 @@ core per symbol and everything on the replicated log. State the two orthogonal
 partitionings (matching by symbol, allocator by account) and why leases exist
 at all — admission happens at N gateways upstream of one writer.
 
-Feeds: proposal figure and topology text; `marginstream/` module boundaries.
-Still needed: three production-quality diagrams; deployment view.
+Diagrams: four Mermaid sources in `paper/diagrams.md` - component, data flow
+for one order, deployment, failure paths and the degradation ladder. Export
+steps in `paper/DIAGRAM_EXPORT.md`.
+Still needed: the prose of section 2 itself.
 
 ## §3 Consistency map
 
@@ -177,8 +179,13 @@ The three abuse cases:
 3. Cross-shard lease capture within an account — mitigation is the reserved
    risk-reducing channel, which exists in the design but is not yet measured.
 
-Feeds: E5.
-Still needed: the mark pipeline design; abuse case 3 as an experiment.
+Status: drafted in `paper/06_security_and_threat_model.md`, including the
+regulatory posture subsection that 3.3 requires.
+Abuse cases as written: A1 market-state replay (closed by the ratchet, free on
+an honest feed); A2 mark suppression (partial, residual pushed to the mark
+pipeline and said to be partial); A3 concentrating to escape the conservative
+split, which is an incentive distortion rather than a safety hole.
+Open: A3 is argued, not measured. The mark pipeline is named, not designed.
 
 ## §7 Trade-offs and alternatives
 
