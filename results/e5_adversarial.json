@@ -1,0 +1,56 @@
+[
+  {
+    "mode": "no_curve",
+    "suppressed": false,
+    "accepted": 36,
+    "liquidations": 0,
+    "breach_ticks": 236,
+    "total_ticks": 480,
+    "final_M": 169325
+  },
+  {
+    "mode": "no_curve",
+    "suppressed": true,
+    "accepted": 36,
+    "liquidations": 0,
+    "breach_ticks": 236,
+    "total_ticks": 480,
+    "final_M": 169325
+  },
+  {
+    "mode": "naive",
+    "suppressed": false,
+    "accepted": 58,
+    "liquidations": 6,
+    "breach_ticks": 0,
+    "total_ticks": 480,
+    "final_M": 129039
+  },
+  {
+    "mode": "naive",
+    "suppressed": true,
+    "accepted": 62,
+    "liquidations": 6,
+    "breach_ticks": 12,
+    "total_ticks": 480,
+    "final_M": 129611
+  },
+  {
+    "mode": "ratchet",
+    "suppressed": false,
+    "accepted": 58,
+    "liquidations": 6,
+    "breach_ticks": 0,
+    "total_ticks": 480,
+    "final_M": 129039
+  },
+  {
+    "mode": "ratchet",
+    "suppressed": true,
+    "accepted": 49,
+    "liquidations": 4,
+    "breach_ticks": 5,
+    "total_ticks": 480,
+    "final_M": 130690
+  }
+]

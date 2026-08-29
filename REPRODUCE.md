@@ -67,3 +67,41 @@ Part A is deterministic. Writes `results/e2_negative.json`.
 - With a large add-on coefficient the budget solve returned zero from the
   second epoch onward and the run became degenerate. `addon_scale` is the
   parameter that controls this.
+
+### experiments/e4_conditional.py
+
+Eight epochs of sixty ticks. The published market state index advances from 0
+to 3 within each epoch. Writes `results/e4_conditional.json`.
+
+              mode   acc  ro_hits   liq  breach_ticks    of   final_M
+            scalar    36        0     0           236   480    169325
+        curve:flat    29        0     0             0   480    121127
+        curve:mild    58        6     6             0   480    129039
+       curve:steep   111       17    17             0   480    114027
+
+Columns: orders accepted, ticks on which a shard reported the reduce-only
+condition, liquidations run, ticks spent with the requirement above equity, the
+total tick count, and the final requirement.
+
+## Further failure modes seen while building this
+
+- The first version of the conditional lease omitted the requirement the
+  portfolio already carried from the left-hand side of the pointwise condition.
+  The flat curve then recorded more breach ticks than the scalar lease.
+- Re-running liquidation on every tick that reported the condition compounded
+  the reduction and drove positions to zero. Liquidation is now followed by a
+  generation bump and a re-issue, which resets the consumption counters.
+
+### experiments/e5_adversarial.py
+
+Same market path as E4. In the suppressed runs the state index handed to the
+shards is held at 0 between ticks 20 and 50 while the invariant checker uses the
+true state. Writes `results/e5_adversarial.json`.
+
+          mode  suppressed   acc   liq  breach_ticks    of   final_M
+      no_curve       False    36     0           236   480    169325
+      no_curve        True    36     0           236   480    169325
+         naive       False    58     6             0   480    129039
+         naive        True    62     6            12   480    129611
+       ratchet       False    58     6             0   480    129039
+       ratchet        True    49     4             5   480    130690

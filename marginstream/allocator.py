@@ -110,3 +110,117 @@ class Allocator:
 
     def current_generation(self, account):
         return self.generation.get(account, 0)
+
+
+# ---------------------------------------------------------------------------
+# Price-conditional leases
+# ---------------------------------------------------------------------------
+
+DECAY_DEN = 1000
+
+
+class ConditionalLease:
+    """A lease whose amount is a non-increasing function of the published
+    market state index k, rather than a single number.
+
+    A shard evaluates the curve against the market state it already receives on
+    the market-data path, so the amount available falls as the market moves
+    adversely without any message from the allocator.
+    """
+
+    __slots__ = ("account", "epoch", "generation", "shard", "curve")
+
+    def __init__(self, account, epoch, generation, shard, curve):
+        self.account = account
+        self.epoch = epoch
+        self.generation = generation
+        self.shard = shard
+        self.curve = tuple(curve)          # curve[k] = amount at market state k
+
+    def at(self, k):
+        if k < 0:
+            k = 0
+        if k >= len(self.curve):
+            k = len(self.curve) - 1
+        return self.curve[k]
+
+    @property
+    def amount(self):
+        return self.curve[0]
+
+
+class CurveAllocator(Allocator):
+    """Issues ConditionalLease curves.
+
+    The curve shape is fixed in advance (a non-increasing sequence of
+    multipliers); the allocator solves for the single scale that makes the
+    pointwise safety condition hold at every market state.
+
+    At market state k the account's equity is its collateral less the loss the
+    portfolio has already taken at k. Positions admitted during the epoch add
+    their own loss at k, and that addition is bounded by the R budget they
+    consumed, because R is a maximum over a scenario set that contains k. The
+    condition therefore closes on itself with a factor of two:
+
+        2 * sum_g curve_g[k] + A_reachable(k) <= collateral - loss(P, f_k)
+    """
+
+    def __init__(self, risk, shape, factor_of_state, drift_bps=0, residual=0):
+        super().__init__(risk, drift_bps=drift_bps, residual=residual)
+        self.shape = tuple(shape)                  # multipliers over DECAY_DEN
+        self.factor_of_state = tuple(factor_of_state)
+
+    def _lhs(self, scale, weights, k, gross_now, collateral, r_now=0):
+        total_w = sum(weights.values()) or 1
+        per_k = sum(
+            (scale * w * self.shape[k]) // (total_w * DECAY_DEN)
+            for w in weights.values()
+        )
+        addon = self.risk.A_of_gross(self._reachable_gross(gross_now, per_k))
+        drift = (collateral * self.drift_bps + 9999) // 10000
+        # r_now is the requirement the portfolio already carries; the two
+        # factors of per_k cover the new positions' own requirement and the
+        # loss those same positions take at state k
+        return r_now + 2 * per_k + addon + drift + self.residual
+
+    def solve_scale(self, positions, collateral, weights):
+        gross_now = self.risk.gross(positions)
+        r_now = self.risk.R(positions)
+
+        def feasible(scale):
+            for k in range(len(self.shape)):
+                rhs = collateral - self.risk.loss(positions, self.factor_of_state[k])
+                if self._lhs(scale, weights, k, gross_now, collateral, r_now) > rhs:
+                    return False
+            return True
+
+        if not feasible(0):
+            return 0
+        hi, step = 0, max(1, collateral)
+        while feasible(hi + step):
+            hi += step
+        lo, hi = hi, hi + step
+        while lo + 1 < hi:
+            mid = (lo + hi) // 2
+            if feasible(mid):
+                lo = mid
+            else:
+                hi = mid
+        return lo
+
+    def issue_curve(self, account, positions, collateral, weights):
+        gen = self.generation.get(account, 0) + 1
+        self.generation[account] = gen
+        scale = self.solve_scale(positions, collateral, weights)
+        total_w = sum(weights.values()) or 1
+        out = {}
+        for g, w in weights.items():
+            curve = [
+                (scale * w * self.shape[k]) // (total_w * DECAY_DEN)
+                for k in range(len(self.shape))
+            ]
+            out[g] = ConditionalLease(account, self.epoch, gen, g, curve)
+        self.issued[(account, self.epoch, gen)] = {
+            g: lz.amount for g, lz in out.items()
+        }
+        return out, scale

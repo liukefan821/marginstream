@@ -1,0 +1,38 @@
+[
+  {
+    "mode": "scalar",
+    "accepted": 36,
+    "reduce_only_hits": 0,
+    "liquidations": 0,
+    "breach_ticks": 236,
+    "total_ticks": 480,
+    "final_M": 169325
+  },
+  {
+    "mode": "curve:flat",
+    "accepted": 29,
+    "reduce_only_hits": 0,
+    "liquidations": 0,
+    "breach_ticks": 0,
+    "total_ticks": 480,
+    "final_M": 121127
+  },
+  {
+    "mode": "curve:mild",
+    "accepted": 58,
+    "reduce_only_hits": 6,
+    "liquidations": 6,
+    "breach_ticks": 0,
+    "total_ticks": 480,
+    "final_M": 129039
+  },
+  {
+    "mode": "curve:steep",
+    "accepted": 111,
+    "reduce_only_hits": 17,
+    "liquidations": 17,
+    "breach_ticks": 0,
+    "total_ticks": 480,
+    "final_M": 114027
+  }
+]
