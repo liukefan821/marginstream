@@ -223,6 +223,19 @@ table.
 
 ---
 
+## Status as of this commit
+
+Drafted: 1, 2, 3, 4, 5, 6, 7, 8, 9. Four Mermaid diagrams with export steps.
+
+Still open, and each is stated as open inside the section that needs it:
+- ledger module not implemented; the solvency chain in 4.3 is an argument
+- replay rate in 5.5 assumed at 10x live, unmeasured; first item in 8.1
+- abuse case A3 in 6.3 argued, not measured
+- simulator uses K=4 where 1.5 derives K=16, so measured exposures are upper
+  bounds
+- liquidation waterfall and mark-price pipeline named, not designed
+- section and module ownership table in 9.5 has empty name fields
+
 ## Order of writing
 
 1. §1 with the table and the three derivations. Everything else refers back to
