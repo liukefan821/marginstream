@@ -34,8 +34,12 @@ unified account breaks the additive pre-trade check that the running case
 relies on, and the quantified NFR table below. Fermi work shown, not just
 quoted.
 
-Feeds: proposal §1 text; the derivation below.
-Still needed: the account and symbol counts we commit to.
+Status: drafted in `paper/01_context_and_requirements.md`.
+Committed scale: 40 underlyings, 120 contracts, 10^6 registered accounts,
+10^5 with open positions, 10^4 changed per epoch, median 5 contracts per
+account, leverage capped at 20x with the parameters set at 8-10x.
+Open: the regulatory posture paragraph belongs in 3.3 and is not yet written
+anywhere.
 
 ### NFR table
 
