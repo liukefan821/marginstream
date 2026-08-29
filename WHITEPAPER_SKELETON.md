@@ -153,9 +153,14 @@ fencing including the rule that a shard which has observed a higher generation
 must fail closed; recovery-time arithmetic; zero-downtime upgrade of a
 deterministic state machine.
 
-Feeds: E1, E2 including the scripted counterexample; the two fencing errors
-recorded in REPRODUCE.md.
-Still needed: recovery-time arithmetic; upgrade rules for the curve format.
+Status: drafted in `paper/05_failure_and_recovery.md`.
+Findings that came out of writing it: leases must not be logged per shard
+(32 MB/s against a 12.8 MB/s order stream); the log carries the schedule
+inputs instead and each shard derives its own lease, which is 8 MB/s. The
+schedule shape and the market-state banding become versioned parts of the
+state machine, so they cannot be tuned at runtime.
+Open: the replay-rate assumption (10x live) is unmeasured; the liquidation
+waterfall is not designed.
 
 ## §6 Security and threat model
 
