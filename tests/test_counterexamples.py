@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from marginstream.risk import RiskModel, Symbol, FACTOR_GRID
 from marginstream.allocator2 import Allocator
 from marginstream.gateway import Gateway
+from marginstream.sequencer import Sequencer
 
 ACC = "X"
 
@@ -447,22 +448,43 @@ def c11_expired_but_unreconciled_holds_its_ceiling():
     )
 
 
-def c12_stale_reconciliation_does_not_lower_exposure():
-    """A reconciliation carrying an older watermark than one already applied
-    must not reduce what the allocator believes is committed."""
-    syms = [Symbol("A", 0, 1000, 100, 100)]
-    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
-    alloc = Allocator(risk, ttl=100)
+def c12_release_requires_coverage_not_just_order():
+    """A report that does not cover every admission the ordering point recorded
+    must not release exposure, however its number compares with what the
+    allocator has seen.
 
-    alloc.observe_usage(ACC, {0: (400, 4000)}, seq=10)
-    before = alloc.committed_of(ACC, 0)
-    alloc.observe_usage(ACC, {0: (50, 500)}, seq=3)     # arrives late
-    after = alloc.committed_of(ACC, 0)
+    All usage reports are lost here, so the allocator has no watermark at all.
+    An optimistic report claiming zero usage must still be refused.
+    """
+    syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 1, 1000, 100, 100)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    collateral = 1_000
+
+    seqr = Sequencer()
+    alloc = Allocator(risk, ttl=100)
+    old = Gateway(0, risk, sequencer=seqr)
+    leases, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
+    old.install_lease(leases[0])
+    gen1 = alloc.current_generation(ACC)
+    while old.admit(ACC, "A", 1, gen1, now=1)[0]:
+        pass
+
+    lid = leases[0].lease_id
+    # a claim that the lease spent nothing, carrying a seal that is not the
+    # one the ordering point issued
+    from marginstream.sequencer import Seal
+    ok, why = alloc.release(ACC, lid, Seal(lid, 0), (0, 0), seqr)
+    accepted_without_fence = ok
+
+    seal = seqr.fence(lid)
+    ok2, why2 = alloc.release(ACC, lid, Seal(lid, 0), (0, 0), seqr)
+    accepted_with_wrong_seq = ok2
 
     return _report(
-        "c12 a stale reconciliation does not lower committed exposure",
-        after == before,
-        f"committed {before} -> {after} after a report with an older watermark",
+        "c12 a release needs a seal covering every admission",
+        (not accepted_without_fence) and (not accepted_with_wrong_seq),
+        f"unfenced release -> {ok}/{why}; short seal against terminal_seq "
+        f"{seal.terminal_seq} -> {ok2}/{why2}",
     )
 
 
@@ -503,6 +525,119 @@ def c13_retire_does_not_revoke_a_live_lease():
     )
 
 
+
+def c14_release_is_refused_without_full_coverage():
+    """A seal whose terminal sequence is behind what the ordering point
+    recorded leaves the ceiling occupied."""
+    syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 1, 1000, 100, 100)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    collateral = 1_000
+    from marginstream.sequencer import Seal
+
+    seqr = Sequencer()
+    alloc = Allocator(risk, ttl=100)
+    old = Gateway(0, risk, sequencer=seqr)
+    leases, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
+    old.install_lease(leases[0])
+    gen1 = alloc.current_generation(ACC)
+    while old.admit(ACC, "A", 1, gen1, now=1)[0]:
+        pass
+
+    lid = leases[0].lease_id
+    truth = seqr.fence(lid)
+    short = Seal(lid, max(0, truth.terminal_seq - 1))
+    ok, why = alloc.release(ACC, lid, short, (0, 0), seqr)
+
+    alloc.bump_generation(ACC)
+    new_leases, _ = alloc.issue(ACC, collateral, {1: 1}, now=101)
+    new = Gateway(1, risk, sequencer=seqr)
+    new.install_lease(new_leases[1])
+    gen2 = alloc.current_generation(ACC)
+    while new.admit(ACC, "B", 1, gen2, now=102)[0]:
+        pass
+
+    pos = merge([old, new])
+    return _report(
+        "c14 a short seal does not release the ceiling",
+        (not ok) and worst_breach(risk, pos, collateral) == 0,
+        f"short release -> {ok}/{why}; replacement granted "
+        f"{new_leases[1].risk_amount}; breach "
+        f"{worst_breach(risk, pos, collateral)}",
+    )
+
+
+def c15_a_seal_does_not_release_a_later_lease():
+    """A terminal report about one term must not release a later term at the
+    same holder."""
+    syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 1, 1000, 100, 100)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    collateral = 1_000
+
+    seqr = Sequencer()
+    alloc = Allocator(risk, ttl=50)
+    gw = Gateway(0, risk, sequencer=seqr)
+
+    l1, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
+    lid1 = l1[0].lease_id
+    gw.install_lease(l1[0])
+    seal1 = seqr.fence(lid1)
+    ok1, _ = alloc.release(ACC, lid1, seal1, (0, 0), seqr)
+
+    alloc.bump_generation(ACC)
+    l2, _ = alloc.issue(ACC, collateral, {0: 1}, now=51)
+    lid2 = l2[0].lease_id
+    gw2 = Gateway(0, risk, sequencer=seqr)
+    gw2.install_lease(l2[0])
+    gen2 = alloc.current_generation(ACC)
+    while gw2.admit(ACC, "A", 1, gen2, now=52)[0]:
+        pass
+
+    # the term-1 report is replayed
+    replay_ok, why = alloc.release(ACC, lid2, seal1, (0, 0), seqr)
+
+    alloc.bump_generation(ACC)
+    l3, _ = alloc.issue(ACC, collateral, {1: 1}, now=102)
+    other = Gateway(1, risk, sequencer=seqr)
+    other.install_lease(l3[1])
+    gen3 = alloc.current_generation(ACC)
+    while other.admit(ACC, "B", 1, gen3, now=103)[0]:
+        pass
+
+    pos = merge([gw2, other])
+    return _report(
+        "c15 a seal from one term does not release another",
+        (not replay_ok) and worst_breach(risk, pos, collateral) == 0,
+        f"first release {ok1}; replay -> {replay_ok}/{why}; breach "
+        f"{worst_breach(risk, pos, collateral)}",
+    )
+
+
+def c16_conflicting_replay_is_refused():
+    """The same seal replayed with a different usage is a conflict, not an
+    update."""
+    syms = [Symbol("A", 0, 1000, 100, 100)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    seqr = Sequencer()
+    alloc = Allocator(risk, ttl=10)
+    gw = Gateway(0, risk, sequencer=seqr)
+    leases, _ = alloc.issue(ACC, 100_000, {0: 1}, now=0)
+    gw.install_lease(leases[0])
+    gen = alloc.current_generation(ACC)
+    gw.admit(ACC, "A", 3, gen, now=1)
+
+    lid = leases[0].lease_id
+    seal = seqr.fence(lid)
+    first = alloc.release(ACC, lid, seal, (300, 3000), seqr)
+    second = alloc.release(ACC, lid, seal, (300, 3000), seqr)   # idempotent
+    third = alloc.release(ACC, lid, seal, (0, 0), seqr)         # conflicting
+
+    return _report(
+        "c16 an identical replay is idempotent, a differing one is refused",
+        first[0] and second[0] and (not third[0]),
+        f"first {first}, replay {second}, conflicting {third}",
+    )
+
+
 CASES = [
     c1_charge_bounds_global_requirement,
     c2_charge_bounds_gross_notional,
@@ -515,8 +650,11 @@ CASES = [
     c9_infeasible_state_is_not_local_reduce_only,
     c10_incarnations_are_counted_separately,
     c11_expired_but_unreconciled_holds_its_ceiling,
-    c12_stale_reconciliation_does_not_lower_exposure,
+    c12_release_requires_coverage_not_just_order,
     c13_retire_does_not_revoke_a_live_lease,
+    c14_release_is_refused_without_full_coverage,
+    c15_a_seal_does_not_release_a_later_lease,
+    c16_conflicting_replay_is_refused,
 ]
 
 

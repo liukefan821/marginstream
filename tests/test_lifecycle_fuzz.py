@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from marginstream.risk import RiskModel, Symbol, FACTOR_GRID
 from marginstream.allocator2 import Allocator, _key
 from marginstream.gateway import Gateway
+from marginstream.sequencer import Sequencer
 
 ACC = "X"
 TRIALS = 300
@@ -40,9 +41,13 @@ def fresh_branches():
         "restart_with_live_predecessor": 0,
         "lost_usage_report": 0,
         "expired_unreconciled_term": 0,
-        "old_holder_admitted_on_its_own_generation": 0,
-        "stale_reconciliation_rejected": 0,
+        "old_generation_attempted": 0,
+        "old_generation_accepted": 0,
+        "stale_report_submitted": 0,
+        "stale_report_rejected": 0,
+        "terminal_release_submitted": 0,
         "terminal_release_accepted": 0,
+        "terminal_release_refused": 0,
         "preexisting_breach_after_collateral_cut": 0,
         "quarantine": 0,
         "lease_lost": 0,
@@ -58,14 +63,25 @@ def merged(gws):
     return out
 
 
-def breach(risk, pos, collateral):
+def gaps(risk, pos, collateral):
+    """The shortfall of equity against the requirement, one entry per scenario.
+
+    Collapsing this to a maximum hides risk moving from one scenario to
+    another while the maximum stays put, so the oracle compares entry by
+    entry.
+    """
     m = risk.M(pos)
-    worst = 0
-    for f in FACTOR_GRID:
-        gap = m - (collateral - risk.loss(pos, f))
-        if gap > worst:
-            worst = gap
-    return worst
+    return [m - (collateral - risk.loss(pos, f)) for f in FACTOR_GRID]
+
+
+def worsened(before, after):
+    """Which scenarios got worse, ignoring ones that were already negative and
+    stayed inside their equity."""
+    out = []
+    for k, (b, a) in enumerate(zip(before, after)):
+        if a > 0 and a > b:
+            out.append((k, b, a))
+    return out
 
 
 def one_trial(seed, branches):
@@ -85,9 +101,11 @@ def one_trial(seed, branches):
     span = ORDERS_PER_GEN
     ttl = rng.choice([rng.randrange(2, span), rng.randrange(span, 6 * span)])
 
+    seqr = Sequencer()
     alloc = Allocator(risk, ttl=ttl, gross_per_risk=rng.randrange(5, 60))
     pool = [(g, 0) for g in range(rng.randrange(1, 4))]
-    gws = {h: Gateway(h[0], risk, incarnation=h[1]) for h in pool}
+    gws = {h: Gateway(h[0], risk, incarnation=h[1], sequencer=seqr)
+           for h in pool}
     reported_seq = {}
     for h in pool:
         reported_seq[h] = -1
@@ -97,15 +115,18 @@ def one_trial(seed, branches):
     cut_binds_at = -1
 
     def live(h):
-        rec = alloc.authority.get(ACC, {}).get(h)
-        return bool(rec and rec[0] > now)
+        # authority is keyed by lease id, so a holder is live when any lease
+        # issued to it is still inside its term
+        return any(holder == h and expiry > now
+                   for holder, expiry, _r, _g
+                   in alloc.authority.get(ACC, {}).values())
 
     for _ in range(GENERATIONS):
         r = rng.random()
         if r < 0.18 and len(pool) < 6:
             new_id = max(h[0] for h in gws) + 1
             h = (new_id, 0)
-            pool.append(h); gws[h] = Gateway(new_id, risk)
+            pool.append(h); gws[h] = Gateway(new_id, risk, sequencer=seqr)
             reported_seq[h] = -1
         elif r < 0.36 and len(pool) > 1:
             h = rng.choice(pool)
@@ -119,19 +140,19 @@ def one_trial(seed, branches):
                 branches["restart_with_live_predecessor"] += 1
             nh = (h[0], h[1] + 1)
             pool.remove(h); pool.append(nh)
-            gws[nh] = Gateway(nh[0], risk, incarnation=nh[1])
+            gws[nh] = Gateway(nh[0], risk, incarnation=nh[1], sequencer=seqr)
             reported_seq[nh] = -1
 
         if rng.random() < 0.25:
             collateral = max(1_000, (collateral * 7) // 10)
-            cut_at = now
+            alloc.bump_credit_version(ACC)
             # a lease already in a gateway's hands cannot be recalled; the cut
             # binds only once every lease outstanding at that moment has run
             # out of term
             cut_binds_at = max(
-                [rec[0] for rec in alloc.authority.get(ACC, {}).values()]
+                [rec[1] for rec in alloc.authority.get(ACC, {}).values()]
                 or [now])
-            if breach(risk, merged(gws), collateral) > 0:
+            if max(gaps(risk, merged(gws), collateral)) > 0:
                 branches["preexisting_breach_after_collateral_cut"] += 1
 
         # usage reports, some of them lost, some of them stale
@@ -143,30 +164,35 @@ def one_trial(seed, branches):
             if rng.random() < 0.15:
                 prev = reported_seq.get(h, -1)
                 stale = min(prev, seq - 5)
-                if stale <= prev and prev >= 0:
-                    branches["stale_reconciliation_rejected"] += 1
-                alloc.observe_usage(
-                    ACC, {h: (0, 0)}, seq=stale)
+                branches["stale_report_submitted"] += 1
+                before_c = alloc.committed_of(ACC, h)
+                alloc.observe_usage(ACC, {h: (0, 0)}, seq=stale)
+                if alloc.committed_of(ACC, h) == before_c:
+                    branches["stale_report_rejected"] += 1
             else:
                 alloc.observe_usage(
                     ACC, {h: (gws[h].used_risk(ACC), gws[h].used_gross(ACC))},
                     seq=seq)
                 reported_seq[h] = seq
 
-        # terminal release for holders whose term is over, sometimes
-        for h in list(gws):
-            rec = alloc.authority.get(ACC, {}).get(h)
-            if rec and rec[0] <= now:
-                if rng.random() < 0.5:
-                    seq += 1
-                    ok, _why = alloc.release(
-                        ACC, h, seq,
-                        (gws[h].used_risk(ACC), gws[h].used_gross(ACC)), now)
-                    if ok:
-                        branches["terminal_release_accepted"] += 1
-                        reported_seq[h] = seq
-                else:
-                    branches["expired_unreconciled_term"] += 1
+        # terminal release for leases whose term is over, sometimes
+        for lid, (h, expiry, _r, _g) in list(
+                alloc.authority.get(ACC, {}).items()):
+            if expiry > now:
+                continue
+            if rng.random() < 0.5:
+                branches["terminal_release_submitted"] += 1
+                seal = seqr.fence(lid)
+                if rng.random() < 0.2:
+                    from marginstream.sequencer import Seal
+                    seal = Seal(lid, max(0, seal.terminal_seq - 1))
+                ok, _why = alloc.release(
+                    ACC, lid, seal,
+                    (gws[h].used_risk(ACC), gws[h].used_gross(ACC)), seqr)
+                branches["terminal_release_accepted" if ok
+                         else "terminal_release_refused"] += 1
+            else:
+                branches["expired_unreconciled_term"] += 1
 
         weights = {h: rng.randrange(0, 4) for h in pool}
         if not weights or sum(weights.values()) == 0:
@@ -198,24 +224,31 @@ def one_trial(seed, branches):
             if held is not None and rng.random() < 0.4:
                 stamped = held.generation          # its own, possibly old
                 if held.generation != gen:
-                    branches["old_holder_admitted_on_its_own_generation"] += 1
+                    branches["old_generation_attempted"] += 1
             else:
                 stamped = gen
-            before = breach(risk, merged(gws), collateral)
+            before = gaps(risk, merged(gws), collateral)
+            held = gws[h].lease.get(ACC)
+            pre_cut_lease = (held is not None
+                             and getattr(held, "credit_version", 0)
+                             < alloc.credit_version.get(ACC, 0))
             ok, _reason = gws[h].admit(ACC, sym, qty, stamped, now=now)
             if not ok:
                 continue
             admissions += 1
-            after = breach(risk, merged(gws), collateral)
-            if after > before:
-                if now < cut_binds_at:
+            if held is not None and held.generation != gen:
+                branches["old_generation_accepted"] += 1
+            after = gaps(risk, merged(gws), collateral)
+            bad = worsened(before, after)
+            if bad:
+                if pre_cut_lease and now < cut_binds_at:
                     # a collateral cut is still inside the term of a lease
                     # issued before it. the exposure this permits is bounded by
                     # that term and is not an admission the mechanism claims to
                     # prevent
                     branches["increase_inside_a_pre_cut_term"] += 1
                     continue
-                return (seed, before, after, collateral,
+                return (seed, bad, collateral,
                         dict(merged(gws))), admissions
 
         now += rng.randrange(0, ttl + 2)
@@ -236,16 +269,16 @@ def main():
           f"admissions: {total}")
     print("conditions reached: " + ", ".join(
         f"{k}={v}" for k, v in branches.items()))
-    print("oracle: no admitted order increases the shortfall of equity "
-          "against the requirement, at any scenario")
+    print("oracle: no admitted order worsens the shortfall at any individual "
+          "scenario, compared entry by entry")
     if failures:
         print(f"FAIL: {len(failures)} trials")
         for f in failures[:3]:
-            print(f"  seed {f[0]}: shortfall {f[1]} -> {f[2]} "
-                  f"(collateral {f[3]})")
-            print(f"    positions {f[4]}")
+            print(f"  seed {f[0]}: scenarios worsened {f[1]} "
+                  f"(collateral {f[2]})")
+            print(f"    positions {f[3]}")
         return 1
-    print("no admission increased the shortfall")
+    print("no admission worsened any scenario")
     return 0
 
 

@@ -25,7 +25,7 @@ matching shards.
 
 class Gateway:
     def __init__(self, gateway_id, risk, fencing=True, ratchet=False,
-                 incarnation=0):
+                 incarnation=0, sequencer=None):
         self.id = gateway_id
         self.incarnation = incarnation
         self.risk = risk
@@ -35,6 +35,8 @@ class Gateway:
         self.lease = {}                  # account -> Lease
         self.seen_generation = {}
         self.worst_state = {}
+        self.sequencer = sequencer
+        self.admission_seq = {}          # lease_id -> admissions made under it
 
     # ---- lease handling -------------------------------------------------
 
@@ -48,6 +50,7 @@ class Gateway:
                 f"lease for ({lease.gateway},{lease.incarnation}) installed at "
                 f"({self.id},{self.incarnation})")
         self.lease[lease.account] = lease
+        self.admission_seq.setdefault(getattr(lease, "lease_id", None), 0)
         prev = self.seen_generation.get(lease.account, 0)
         self.seen_generation[lease.account] = max(prev, lease.generation)
         self.worst_state[lease.account] = 0
@@ -99,6 +102,17 @@ class Gateway:
             return False, "risk_envelope"
         if gross_after > lease.gross_at(state):
             return False, "gross_envelope"
+
+        # the order is numbered under this lease and offered to the ordering
+        # point. a fenced lease is refused there regardless of what this
+        # gateway believes the time to be.
+        lid = getattr(lease, "lease_id", None)
+        if self.sequencer is not None and lid is not None:
+            nxt = self.admission_seq.get(lid, 0) + 1
+            ok, why = self.sequencer.submit(lid, nxt)
+            if not ok:
+                return False, why
+            self.admission_seq[lid] = nxt
 
         pos[symbol] = pos.get(symbol, 0) + qty
         return True, "ok"

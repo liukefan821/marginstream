@@ -383,3 +383,99 @@ follows from recompute cost is therefore incomplete.
 - Section 6.1's claim that a compromised gateway's blast radius is bounded by
   its lease has to be replaced by an admission that the gateway is inside the
   trusted computing base.
+
+## Fifth review round (2026-08-30)
+
+The previous round named its rule "terminal, ordered reconciliation" and
+implemented only the ordering half. Three defects followed from that, and one
+of the tests written to guard it did not guard anything.
+
+- **c12 was vacuous.** It called `observe_usage` twice and checked that a
+  smaller figure did not overwrite a larger one. `observe_usage` takes a
+  maximum, so the test passed with the watermark check deleted. It never called
+  `release`, which is the function whose behaviour it claimed to pin.
+- **A watermark that does not go backwards is not coverage.** With every usage
+  report lost the allocator's watermark stays at its initial value, so a report
+  claiming zero usage was accepted as terminal and the ceiling was handed to a
+  replacement.
+- **Reports were keyed by holder, not by lease**, so a terminal report about
+  one term released a later term at the same holder.
+- **A clock comparison does not prove a holder has stopped.** The allocator
+  compared its own `now` against the lease expiry; a partitioned gateway whose
+  clock is behind keeps admitting.
+
+What changed:
+
+- Every issuance carries a unique `lease_id`, and authority is keyed by it.
+- A gateway numbers its admissions under a lease from one upward and submits
+  each to the ordering point, which accepts only the next number for that
+  lease. The recorded sequence is therefore gap-free.
+- `marginstream/sequencer.py` holds the fence. Fencing a lease stops anything
+  carrying it from reaching a book, whatever any gateway believes the time to
+  be, and returns a seal naming the last admission it recorded.
+- `release(account, lease_id, seal, usage, sequencer)` is refused unless the
+  lease is fenced, the seal is the one that ordering point issued for that
+  lease, and its terminal sequence matches. A replay with identical figures is
+  idempotent; one with different figures is a conflict.
+- `retire` is enforced in `issue` rather than being a convention between the
+  allocator and its caller, and `activate` undoes it.
+
+Three counterexamples were added for the seal, and c12 was rewritten to
+exercise `release` with no usage reports at all.
+
+### The fuzz oracle was collapsing the property it claimed to test
+
+It compared the largest shortfall across scenarios before and after each
+admission. A portfolio whose shortfall vector rotates while its maximum stays
+put passes that test, and the printed line claimed the check ran "at any
+scenario". The oracle now compares the vector entry by entry.
+
+Branch counters were also counting attempts rather than outcomes, and the
+predicate for "is this holder's authority still live" was left keyed by holder
+after authority moved to lease ids, which silently zeroed two of them. Both are
+fixed, and the counters now separate submitted from accepted.
+
+    $ python3 tests/test_counterexamples.py
+    16 of 16 properties hold
+
+    $ python3 tests/test_lifecycle_fuzz.py
+    trials: 300, generations per trial: 6, admissions: 13253
+    conditions reached: retire_with_live_authority=57,
+      restart_with_live_predecessor=112, lost_usage_report=1808,
+      expired_unreconciled_term=2458, old_generation_attempted=8365,
+      old_generation_accepted=77, stale_report_submitted=626,
+      stale_report_rejected=626, terminal_release_submitted=2501,
+      terminal_release_accepted=2265, terminal_release_refused=236,
+      preexisting_breach_after_collateral_cut=25, quarantine=392,
+      lease_lost=966, increase_inside_a_pre_cut_term=1
+    no admission worsened any scenario
+
+    extended run: trials 1500, admissions 63691, failures 0
+
+### A sentence corrected
+
+The previous round recorded that "the lease term is the latency of every credit
+decision". That is too broad. Raising a limit takes effect at the next
+issuance; lowering one does too when the allocator can reach the gateways. The
+accurate statement is:
+
+> the lease term is the worst-case enforcement latency of a **tightening**
+> decision **under partition**
+
+and a withdrawal can be settled after the outstanding terms end rather than
+requiring collateral to be lowered first.
+
+### Still open
+
+- Worst-fill. A gateway tracks the orders it admitted, not the positions that
+  filled, and a fenced lease is still not terminal for exposure: resting orders
+  admitted under it can fill afterwards. The envelope needs both
+  `max_k [ loss_k(filled) + sum_i max(0, loss_k(remaining_i)) ]` and
+  `sum_s mark_s * max(|p_s + B_s|, |p_s - S_s|)`, and a cancel must release its
+  reservation only on an ordered confirmation.
+- One holder incarnation is assumed to be a single-writer failure domain and
+  not clonable.
+- A gateway is a stateful authority whose crash, rebuild and failover are not
+  designed.
+- Section 6.1's blast-radius claim still has to be replaced by an admission
+  that the gateway is inside the trusted computing base.

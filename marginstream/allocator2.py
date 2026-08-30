@@ -42,10 +42,12 @@ DECAY_DEN = 1000
 
 class Lease:
     __slots__ = ("account", "epoch", "generation", "gateway", "incarnation",
-                 "expiry", "mode", "risk_curve", "gross_curve")
+                 "expiry", "mode", "risk_curve", "gross_curve", "lease_id",
+                 "credit_version")
 
     def __init__(self, account, epoch, generation, gateway, incarnation,
-                 expiry, mode, risk_curve, gross_curve):
+                 expiry, mode, risk_curve, gross_curve, lease_id=None,
+                 credit_version=0):
         self.account = account
         self.epoch = epoch
         self.generation = generation
@@ -55,6 +57,8 @@ class Lease:
         self.mode = mode                    # "normal" or "quarantine"
         self.risk_curve = tuple(risk_curve)
         self.gross_curve = tuple(gross_curve)
+        self.lease_id = lease_id
+        self.credit_version = credit_version
 
     @staticmethod
     def _at(curve, k):
@@ -100,11 +104,14 @@ class Allocator:
         self.epoch = 0
         self.generation = {}
         self.issued = {}
-        self.authority = {}       # account -> holder -> (expiry, r_ceil, g_ceil)
+        # account -> lease_id -> (holder, expiry, r_ceil, g_ceil)
+        self.authority = {}
         self.committed = {}       # account -> holder -> (r_used, g_used)
         self.watermark = {}       # account -> holder -> highest report seq seen
-        self.released = {}        # account -> set of terminally reconciled holders
-        self.retired = {}         # account -> set of holders no longer issued to
+        self.sealed = {}          # account -> lease_id -> Seal accepted
+        self.retired = {}         # account -> set of holders not to be issued to
+        self.credit_version = {}  # account -> version, bumped on a credit change
+        self._next_lease_id = 1
 
     # ---- state -----------------------------------------------------------
 
@@ -136,35 +143,65 @@ class Allocator:
             pr, pg = comm.get(h, (0, 0))
             comm[h] = (max(pr, r), max(pg, gr))
 
-    def release(self, account, gateway, seq, usage, now):
-        """Terminal reconciliation.
+    def release(self, account, lease_id, seal, usage, sequencer):
+        """Terminal reconciliation. The only path that lowers exposure.
 
-        The only path that lowers a holder's exposure, and it is refused unless
-        the holder can no longer admit: its term must have run out. The report
-        must also carry a watermark at least as high as anything already
-        applied, so that a late snapshot cannot undo a newer one.
+        Three things have to be true, and a watermark that merely does not go
+        backwards is none of them:
+
+        - the lease has been fenced at the ordering point, so it can produce no
+          further admissions. A clock comparison does not establish this: a
+          partitioned gateway's clock may be behind the allocator's.
+        - the seal is the one the ordering point issued for *this* lease, so a
+          report about an earlier lease cannot release a later one.
+        - the seal covers every admission the ordering point recorded, so the
+          usage in the report is not missing any.
         """
-        h = _key(gateway)
-        rec = self._auth(account).get(h)
-        if rec and rec[0] > now:
-            return False, "still_within_term"
-        wm = self.watermark.setdefault(account, {})
-        if seq < wm.get(h, -1):
-            return False, "stale_watermark"
-        wm[h] = seq
+        sealed = self.sealed.setdefault(account, {})
+        if lease_id in sealed:
+            # a replay carrying the same figures is the same fact stated twice
+            if sealed[lease_id] == usage:
+                return True, "idempotent_replay"
+            return False, "conflicting_replay"
+
+        auth = self._auth(account)
+        rec = auth.get(lease_id)
+        if rec is None:
+            return False, "unknown_lease"
+        if not sequencer.is_fenced(lease_id):
+            return False, "not_fenced"
+        truth = sequencer.seal_of(lease_id)
+        if seal.lease_id != lease_id:
+            return False, "seal_for_another_lease"
+        if seal.terminal_seq != truth.terminal_seq:
+            return False, "seal_does_not_cover_all_admissions"
+
+        sealed[lease_id] = usage
+        h = rec[0]
+        # the holder's admitted set has been measured; other unsealed leases of
+        # the same holder keep their own occupancy in _bounds
         self._comm(account)[h] = usage
-        self.released.setdefault(account, set()).add(h)
+        del auth[lease_id]
         return True, "released"
 
     def retire(self, account, gateway):
         """Stop issuing to a holder.
 
-        This does not take back a lease that is still inside its term: a
-        retired process may be partitioned rather than stopped, and its
-        authority stands until the term ends or a terminal reconciliation
-        arrives.
+        This does not take back a lease inside its term: a retired process may
+        be partitioned rather than stopped, and its authority stands until the
+        lease is fenced and sealed.
         """
         self.retired.setdefault(account, set()).add(_key(gateway))
+
+    def activate(self, account, gateway):
+        """Undo a retirement. A restarted process should come back as a new
+        incarnation rather than through this."""
+        self.retired.setdefault(account, set()).discard(_key(gateway))
+
+    def bump_credit_version(self, account):
+        v = self.credit_version.get(account, 0) + 1
+        self.credit_version[account] = v
+        return v
 
     # ---- safety condition ------------------------------------------------
 
@@ -191,27 +228,24 @@ class Allocator:
         """
         auth = self._auth(account)
         comm = self._comm(account)
-        released = self.released.get(account, set())
+
+        # the largest ceiling still outstanding at each holder. a gateway
+        # installs one lease per account, so two unsealed leases at one holder
+        # are two candidates for the one it is actually using; different
+        # incarnations are different holders and add up.
+        held = {}
+        for _lid, (h, _expiry, r_ceil, g_ceil) in auth.items():
+            hr, hg = held.get(h, (0, 0))
+            held[h] = (max(hr, r_ceil), max(hg, g_ceil))
+
         risk_total = gross_total = 0
-        for h in set(auth) | set(comm) | set(ceilings):
+        for h in set(held) | set(comm) | set(ceilings):
             new_r = ceilings.get(h, 0)
             new_g = new_r * self.gross_per_risk
             cr, cg = comm.get(h, (0, 0))
-            rec = auth.get(h)
-            if h in released:
-                # the holder has been proved unable to admit further and its
-                # final usage is known exactly
-                held_r, held_g = 0, 0
-            elif rec:
-                # a term that has run out without a terminal reconciliation
-                # leaves the allocator unable to say what was spent, so the
-                # whole ceiling stays occupied. expiry ends permission; only
-                # terminal, ordered reconciliation releases exposure.
-                held_r, held_g = rec[1], rec[2]
-            else:
-                held_r, held_g = 0, 0
-            risk_total += max(new_r, held_r, cr)
-            gross_total += max(new_g, held_g, cg)
+            hr, hg = held.get(h, (0, 0))
+            risk_total += max(new_r, hr, cr)
+            gross_total += max(new_g, hg, cg)
         return risk_total, gross_total
 
     def _feasible(self, account, scale, weights, collateral, now):
@@ -270,31 +304,27 @@ class Allocator:
         out = {}
         denom = self.shape[0] or 1
         comm = self._comm(account)
+        retired = self.retired.get(account, set())
+        cv = self.credit_version.get(account, 0)
         for g in weights:
             h = _key(g)
+            if h in retired:
+                continue
             top = base[h]
             floor_r = comm.get(h, (0, 0))[0]
             risk_curve = tuple(max((top * self.shape[k]) // denom, floor_r)
                                for k in range(len(self.shape)))
             gross_curve = tuple(r * self.gross_per_risk for r in risk_curve)
+            lid = self._next_lease_id
+            self._next_lease_id += 1
             out[g] = Lease(account, self.epoch, gen, h[0], h[1],
-                           now + self.ttl, mode, risk_curve, gross_curve)
+                           now + self.ttl, mode, risk_curve, gross_curve,
+                           lease_id=lid, credit_version=cv)
 
         auth = self._auth(account)
-        rel = self.released.setdefault(account, set())
         for g, lz in out.items():
-            h = _key(g)
-            # a holder that was terminally released and is now leased again is
-            # live once more; leaving it marked released would drop its new
-            # ceiling from the accounting
-            rel.discard(h)
-            prev = auth.get(h)
-            if prev and prev[0] > now:
-                auth[h] = (max(prev[0], lz.expiry),
-                           max(prev[1], lz.risk_amount),
-                           max(prev[2], lz.gross_amount))
-            else:
-                auth[h] = (lz.expiry, lz.risk_amount, lz.gross_amount)
+            auth[lz.lease_id] = (_key(g), lz.expiry, lz.risk_amount,
+                                 lz.gross_amount)
 
         self.issued[(account, self.epoch, gen)] = {
             g: lz.risk_amount for g, lz in out.items()
