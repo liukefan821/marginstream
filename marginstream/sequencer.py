@@ -41,8 +41,20 @@ class Sequencer:
         self.fills = {}             # order_id -> filled quantity
         self.cancelled = set()      # order_ids acknowledged as cancelled
         self.rejected = 0
+        # the same facts in arrival order, which is what a recovering component
+        # replays. `position` is the watermark a snapshot records.
+        self.events = []
 
-    def submit(self, lease_id, admission_seq, order_id, account, symbol, qty):
+    def position(self):
+        return len(self.events)
+
+    def replay_from(self, watermark):
+        """Events after `watermark`, each with its position, so a replaying
+        component can tell a repeat from a new fact."""
+        return list(enumerate(self.events))[watermark:]
+
+    def submit(self, lease_id, admission_seq, order_id, account, symbol, qty,
+               holder=None):
         """Return (accepted, reason).
 
         The payload is recorded, so a reconciliation can be computed from this
@@ -51,7 +63,7 @@ class Sequencer:
         same number with a different payload is a conflict.
         """
         key = (lease_id, admission_seq)
-        payload = (order_id, account, symbol, qty)
+        payload = (order_id, account, symbol, qty, holder)
         if key in self.log:
             if self.log[key] == payload:
                 return True, "idempotent_retry"
@@ -66,15 +78,21 @@ class Sequencer:
             return False, "sequence_gap"
         self.last_seq[lease_id] = admission_seq
         self.log[key] = payload
+        self.events.append(("admit", lease_id, admission_seq, order_id,
+                            account, symbol, qty, holder))
         return True, "ok"
 
     def record_fill(self, order_id, qty):
         """An authoritative fill. Recorded here so a reconciliation can be
         computed from this log rather than reported by the holder."""
         self.fills[order_id] = self.fills.get(order_id, 0) + qty
+        self.events.append(("fill", order_id, qty))
 
     def record_cancel(self, order_id):
+        if order_id in self.cancelled:
+            return
         self.cancelled.add(order_id)
+        self.events.append(("cancel", order_id))
 
     def reconcile(self, lease_id, risk):
         """Replay the log for one lease and return its worst-fill occupancy.
@@ -84,7 +102,7 @@ class Sequencer:
         """
         filled = {}
         remaining = []
-        for order_id, _acct, symbol, qty in self.admissions_of(lease_id):
+        for order_id, _acct, symbol, qty, _holder in self.admissions_of(lease_id):
             done = self.fills.get(order_id, 0)
             if done:
                 filled[symbol] = filled.get(symbol, 0) + done
@@ -135,6 +153,8 @@ class Sequencer:
         if lease_id not in self.fenced:
             self.fenced[lease_id] = Seal(lease_id,
                                          self.last_seq.get(lease_id, 0))
+            self.events.append(("fence", lease_id,
+                                self.fenced[lease_id].terminal_seq))
         return self.fenced[lease_id]
 
     def is_fenced(self, lease_id):

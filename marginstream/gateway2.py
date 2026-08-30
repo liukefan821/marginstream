@@ -71,6 +71,10 @@ class Gateway:
         self.seen_generation = {}
         self.worst_state = {}
         self.admission_seq = {}
+        # a recovering gateway admits nothing until its state has been rebuilt
+        self.recovering = False
+        # highest log position folded in, so a repeated slice is absorbed
+        self.log_high_water = 0
 
     # ---- state helpers ---------------------------------------------------
 
@@ -80,6 +84,16 @@ class Gateway:
             st = _AccountState(self.n_scen)
             self.state[account] = st
         return st
+
+    @staticmethod
+    def _bump(tally, sym, delta):
+        """Adjust a per-symbol tally and drop it when it reaches zero, so two
+        equal states have equal structure."""
+        v = tally.get(sym, 0) + delta
+        if v:
+            tally[sym] = v
+        else:
+            tally.pop(sym, None)
 
     def _symbol_gross(self, st, sym):
         mark = self.risk.symbols[sym].mark
@@ -160,6 +174,8 @@ class Gateway:
 
     def admit(self, account, symbol, qty, generation, market_state=0, now=0,
               order_id=None):
+        if self.recovering:
+            return False, "recovering"
         lease = self.lease.get(account)
         if lease is None:
             return False, "no_lease"
@@ -192,16 +208,12 @@ class Gateway:
         elif self.worst_fill:
             risk_after = self._risk_wf(st, vec)
             before_sym = self._symbol_gross(st, symbol)
-            if qty > 0:
-                st.buy_rem[symbol] = st.buy_rem.get(symbol, 0) + qty
-            else:
-                st.sell_rem[symbol] = st.sell_rem.get(symbol, 0) - qty
+            self._bump(st.buy_rem if qty > 0 else st.sell_rem, symbol,
+                       qty if qty > 0 else -qty)
             gross_after = st.gross_wf - before_sym + self._symbol_gross(st, symbol)
             # undo the tentative update; it is redone below only if admitted
-            if qty > 0:
-                st.buy_rem[symbol] -= qty
-            else:
-                st.sell_rem[symbol] += qty
+            self._bump(st.buy_rem if qty > 0 else st.sell_rem, symbol,
+                       -qty if qty > 0 else qty)
         else:
             net = dict(st.filled)
             for _oid, (s2, r2, _v) in st.orders.items():
@@ -220,7 +232,8 @@ class Gateway:
             nxt = self.admission_seq.get(lid, 0) + 1
             oid = order_id if order_id is not None else f"{lid}:{nxt}"
             ok, why = self.sequencer.submit(
-                lid, nxt, oid, account, symbol, qty)
+                lid, nxt, oid, account, symbol, qty,
+                holder=(self.id, self.incarnation))
             if not ok:
                 return False, why
             self.admission_seq[lid] = nxt
@@ -234,10 +247,8 @@ class Gateway:
             if vec[k] > 0:
                 st.pos_part_num[k] += vec[k]
         before_sym = self._symbol_gross(st, symbol)
-        if qty > 0:
-            st.buy_rem[symbol] = st.buy_rem.get(symbol, 0) + qty
-        else:
-            st.sell_rem[symbol] = st.sell_rem.get(symbol, 0) - qty
+        self._bump(st.buy_rem if qty > 0 else st.sell_rem, symbol,
+                   qty if qty > 0 else -qty)
         st.gross_wf += self._symbol_gross(st, symbol) - before_sym
         return True, "ok"
 
@@ -268,11 +279,9 @@ class Gateway:
                 st.pos_part_num[k] += new_vec[k]
             st.filled_num[k] += part[k]
 
-        st.filled[symbol] = st.filled.get(symbol, 0) + qty
-        if remaining > 0:
-            st.buy_rem[symbol] = st.buy_rem.get(symbol, 0) - qty
-        else:
-            st.sell_rem[symbol] = st.sell_rem.get(symbol, 0) + qty
+        self._bump(st.filled, symbol, qty)
+        self._bump(st.buy_rem if remaining > 0 else st.sell_rem, symbol,
+                   -qty if remaining > 0 else qty)
 
         if rest == 0:
             del st.orders[order_id]
@@ -296,10 +305,8 @@ class Gateway:
         for k in range(self.n_scen):
             if vec[k] > 0:
                 st.pos_part_num[k] -= vec[k]
-        if remaining > 0:
-            st.buy_rem[symbol] = st.buy_rem.get(symbol, 0) - remaining
-        else:
-            st.sell_rem[symbol] = st.sell_rem.get(symbol, 0) + remaining
+        self._bump(st.buy_rem if remaining > 0 else st.sell_rem, symbol,
+                   -remaining if remaining > 0 else remaining)
         st.gross_wf += self._symbol_gross(st, symbol) - before_sym
         return True, "cancelled"
 
@@ -348,3 +355,153 @@ class Gateway:
         if not self.worst_fill:
             return self.risk.gross(self.local_positions(account))
         return st.gross_wf
+
+    # ---- snapshot and recovery -------------------------------------------
+
+    def state_digest(self, account):
+        """A digest over the state that recovery has to reproduce.
+
+        Only the authoritative fields go in. The per-scenario aggregates are a
+        pure function of them, so including them would hide a rebuild that got
+        the aggregates right by accident and the orders wrong.
+        """
+        import hashlib
+        st = self._st(account)
+        canon = repr((
+            sorted(st.filled.items()),
+            sorted((oid, sym, rem) for oid, (sym, rem, _v) in st.orders.items()),
+        )).encode()
+        return hashlib.sha256(canon).hexdigest()[:16]
+
+    def aggregate_digest(self, account):
+        import hashlib
+        st = self._st(account)
+        canon = repr((list(st.filled_num), list(st.pos_part_num),
+                      sorted(st.buy_rem.items()), sorted(st.sell_rem.items()),
+                      st.gross_wf)).encode()
+        return hashlib.sha256(canon).hexdigest()[:16]
+
+    def snapshot(self):
+        """A point-in-time image plus the log watermark it corresponds to.
+
+        Only the authoritative fields are written. Everything else is rebuilt
+        on load, which is why a snapshot cannot disagree with itself.
+        """
+        wm = self.sequencer.position() if self.sequencer else 0
+        return {
+            "holder": (self.id, self.incarnation),
+            "watermark": wm,
+            "admission_seq": dict(self.admission_seq),
+            "accounts": {
+                acct: {
+                    "filled": dict(st.filled),
+                    "orders": {oid: (sym, rem)
+                               for oid, (sym, rem, _v) in st.orders.items()},
+                }
+                for acct, st in self.state.items()
+            },
+        }
+
+    def _apply_admit(self, account, order_id, symbol, qty):
+        st = self._st(account)
+        if order_id in st.orders:
+            return                                   # idempotent
+        vec = self._order_vector(symbol, qty)
+        st.orders[order_id] = (symbol, qty, vec)
+        for k in range(self.n_scen):
+            if vec[k] > 0:
+                st.pos_part_num[k] += vec[k]
+        before = self._symbol_gross(st, symbol)
+        self._bump(st.buy_rem if qty > 0 else st.sell_rem, symbol,
+                   qty if qty > 0 else -qty)
+        st.gross_wf += self._symbol_gross(st, symbol) - before
+
+    def restore(self, snapshot, sequencer, expected_holder=None):
+        """Load a snapshot and replay the log after its watermark.
+
+        Refused, with the gateway left in quarantine, when the snapshot was cut
+        for another holder or claims a watermark the ordering point has not
+        reached. Recovery is the same fold the live path performs, so a
+        recovered gateway is byte-identical to one rebuilt from the whole log.
+        """
+        self.recovering = True
+        holder = tuple(snapshot.get("holder", (self.id, self.incarnation)))
+        want = expected_holder or (self.id, self.incarnation)
+        if holder != tuple(want):
+            return False, "snapshot_for_another_holder"
+        wm = snapshot.get("watermark", 0)
+        if wm > sequencer.position():
+            return False, "snapshot_ahead_of_log"
+
+        self.sequencer = sequencer
+        self.state = {}
+        self.log_high_water = wm
+        self.admission_seq = dict(snapshot.get("admission_seq", {}))
+        for acct, blob in snapshot.get("accounts", {}).items():
+            st = self._st(acct)
+            for oid, (sym, rem) in blob.get("orders", {}).items():
+                self._apply_admit(acct, oid, sym, rem)
+            for sym, q in blob.get("filled", {}).items():
+                if q:
+                    self._bump(st.filled, sym, q)
+                    part = self._order_vector(sym, q)
+                    for k in range(self.n_scen):
+                        st.filled_num[k] += part[k]
+            st.gross_wf = self._gross_wf_fullscan(st)
+
+        applied, skipped = self.replay(sequencer.replay_from(wm))
+        self.recovering = False
+        return True, f"replayed {applied} events, {skipped} not ours"
+
+    def replay(self, events):
+        """Apply an ordered slice of the log. Events for another holder are
+        skipped; repeats are absorbed."""
+        applied = skipped = 0
+        mine = (self.id, self.incarnation)
+        for pos, ev in events:
+            if pos < self.log_high_water:
+                skipped += 1
+                continue
+            self.log_high_water = pos + 1
+            kind = ev[0]
+            if kind == "admit":
+                _k, lease_id, seq, oid, acct, sym, qty, holder = ev
+                if holder is not None and tuple(holder) != mine:
+                    skipped += 1
+                    continue
+                self._apply_admit(acct, oid, sym, qty)
+                prev = self.admission_seq.get(lease_id, 0)
+                self.admission_seq[lease_id] = max(prev, seq)
+                applied += 1
+            elif kind == "fill":
+                _k, oid, qty = ev
+                for acct in list(self.state):
+                    if oid in self.state[acct].orders:
+                        self.fill(acct, oid, qty)
+                        applied += 1
+                        break
+                else:
+                    skipped += 1
+            elif kind == "cancel":
+                _k, oid = ev
+                for acct in list(self.state):
+                    if oid in self.state[acct].orders:
+                        self.cancel_ack(acct, oid)
+                        applied += 1
+                        break
+                else:
+                    skipped += 1
+            else:
+                skipped += 1
+        return applied, skipped
+
+    @classmethod
+    def rebuild_from_log(cls, gateway_id, risk, sequencer, incarnation=0):
+        """A gateway rebuilt from the whole log with no snapshot. The reference
+        the recovered state is compared against."""
+        gw = cls(gateway_id, risk, incarnation=incarnation, sequencer=sequencer)
+        gw.recovering = True
+        gw.log_high_water = 0
+        gw.replay(sequencer.replay_from(0))
+        gw.recovering = False
+        return gw

@@ -1,0 +1,17 @@
+{
+  "crashes": 3642,
+  "recoveries": 3642,
+  "before_any_snapshot": 322,
+  "after_snapshot": 2177,
+  "with_no_events_since": 324,
+  "mid_partial_fill": 2364,
+  "stale_snapshot_offered": 819,
+  "other_incarnation_refused": 516,
+  "events_replayed": 74436,
+  "events_skipped": 0,
+  "equivalence_checks": 3642,
+  "equivalence_failures": 0,
+  "admissions": 13512,
+  "fills": 6641,
+  "cancels": 3519
+}

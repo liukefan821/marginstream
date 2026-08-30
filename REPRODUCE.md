@@ -592,3 +592,89 @@ collateral.
   has lost its argument and should be replaced rather than extended.
 - Section 6.1's blast-radius claim still needs replacing with an admission that
   the gateway is inside the trusted computing base.
+
+## Recovery round (2026-08-31)
+
+### What a gateway actually has to persist
+
+Taking the fields one at a time, the answer is that none of them has to be
+persisted for correctness.
+
+| Field | Classification |
+|---|---|
+| `filled` positions | a fold of the ordering point's fill records |
+| `orders` and their remaining quantities | admissions less fills less acknowledged cancels |
+| `filled_num`, `pos_part_num` per scenario | pure functions of the two above; cache |
+| `buy_rem`, `sell_rem` per symbol | pure functions of the orders; cache |
+| `gross_wf` | pure function; cache |
+| `admission_seq` per lease | the ordering point's own last sequence for that lease |
+| the installed lease | not restored. a recovered gateway waits to be handed one |
+| ratchet `worst_state` | not restored. it is re-established from the next state tick |
+
+So the gateway's safety-critical state is a deterministic fold of the log, the
+same relationship the running case has between balances and the journal. A
+snapshot is a way of bounding replay time, not a correctness requirement, and
+that is why `Gateway.rebuild_from_log` exists as the reference the recovered
+state is compared against.
+
+### The protocol
+
+A snapshot records only the authoritative fields plus the log position it was
+cut at, and the aggregates are rebuilt on load, so a snapshot cannot disagree
+with itself. `restore` loads it and replays the log after that watermark.
+Refused, with the gateway left quarantined: a snapshot cut by a different
+holder or incarnation, and one claiming a position the ordering point has not
+reached. A gateway that has not finished recovering admits nothing; it does not
+fall back on a local judgment that an order reduces risk, because c9 already
+showed that judgment is unsound across gateways.
+
+Replay is idempotent by log position. An earlier version relied on the order id
+for that, which covers admissions and not fills or cancels, and r2 caught it:
+replaying the same slice twice applied the fills twice.
+
+### Evidence
+
+    $ python3 tests/test_recovery.py
+    6 of 6 properties hold
+
+    $ python3 experiments/e4_recovery.py
+    trials: 200, steps per trial: 150
+    windows and counters: crashes=3642, recoveries=3642, before_any_snapshot=322,
+      after_snapshot=2177, with_no_events_since=324, mid_partial_fill=2364,
+      stale_snapshot_offered=819, other_incarnation_refused=516,
+      events_replayed=74436, events_skipped=0, equivalence_checks=3642,
+      equivalence_failures=0, admissions=13512, fills=6641, cancels=3519
+    every recovery reproduced the state the log implies
+
+The counters name the window a crash fell in rather than counting how often a
+crash was called: 322 recoveries had no snapshot to work from and replayed the
+whole log, 2,364 fell between two partial fills of one order, 819 were offered
+an older snapshot than the newest available, and 516 were offered one cut by a
+different incarnation and refused it. Each of the 3,642 recoveries was compared
+against a gateway rebuilt from the entire log on filled positions, live orders,
+both per-scenario aggregate families and both envelopes.
+
+A defect found by that comparison: a per-symbol tally left at zero rather than
+removed made two structurally different dictionaries hold the same quantities,
+so 174 of the first run's recoveries were reported as disagreements when the
+state was in fact equal. Tallies are now dropped when they reach zero.
+
+### Regression across the frozen layers
+
+    test_counterexamples   16 of 16
+    test_worst_fill         6 of 6
+    test_worst_fill_exhaustive  closed form equals enumeration
+    test_algebra            admission bound held on every sample
+    test_lifecycle_fuzz     no admission worsened any scenario
+    e1_worst_fill_safety    no state reached a requirement above equity
+    e2_naive_netting        netting reaches 201,000 against 2,000 of collateral
+
+### Still open
+
+- Cost basis, realised profit and loss, fees, and equity as
+  `Collateral + realised + unrealised(k) - fees`. Until that exists the safety
+  condition is stated against collateral rather than against equity as a venue
+  would compute it.
+- The allocator's own snapshot and failover. This round covers the gateway.
+- Section 6.1's blast-radius claim still needs replacing with an admission that
+  the gateway is inside the trusted computing base.
