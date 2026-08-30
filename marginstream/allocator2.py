@@ -108,7 +108,8 @@ class Allocator:
         self.authority = {}
         self.committed = {}       # account -> holder -> (r_used, g_used)
         self.watermark = {}       # account -> holder -> highest report seq seen
-        self.sealed = {}          # account -> lease_id -> Seal accepted
+        self.sealed = {}          # account -> lease_id -> measured usage
+        self.sealed_sum = {}      # account -> holder -> summed sealed usage
         self.retired = {}         # account -> set of holders not to be issued to
         self.credit_version = {}  # account -> version, bumped on a credit change
         self._next_lease_id = 1
@@ -143,7 +144,7 @@ class Allocator:
             pr, pg = comm.get(h, (0, 0))
             comm[h] = (max(pr, r), max(pg, gr))
 
-    def release(self, account, lease_id, seal, usage, sequencer):
+    def release(self, account, lease_id, seal, sequencer, risk=None):
         """Terminal reconciliation. The only path that lowers exposure.
 
         Three things have to be true, and a watermark that merely does not go
@@ -157,17 +158,9 @@ class Allocator:
         - the seal covers every admission the ordering point recorded, so the
           usage in the report is not missing any.
         """
-        sealed = self.sealed.setdefault(account, {})
-        if lease_id in sealed:
-            # a replay carrying the same figures is the same fact stated twice
-            if sealed[lease_id] == usage:
-                return True, "idempotent_replay"
-            return False, "conflicting_replay"
-
-        auth = self._auth(account)
-        rec = auth.get(lease_id)
-        if rec is None:
-            return False, "unknown_lease"
+        # the figures are computed from the ordering point's own log rather
+        # than reported by whoever asks for the release. a correct seal paired
+        # with an optimistic usage claim was previously accepted.
         if not sequencer.is_fenced(lease_id):
             return False, "not_fenced"
         truth = sequencer.seal_of(lease_id)
@@ -176,11 +169,31 @@ class Allocator:
         if seal.terminal_seq != truth.terminal_seq:
             return False, "seal_does_not_cover_all_admissions"
 
+        usage = sequencer.reconcile(lease_id, risk if risk is not None
+                                    else self.risk)
+        sealed = self.sealed.setdefault(account, {})
+        if lease_id in sealed:
+            # a replay of the same seal restates the same fact
+            if sealed[lease_id] == usage:
+                return True, "idempotent_replay"
+            return False, "conflicting_replay"
+
+        auth = self._auth(account)
+        rec = auth.get(lease_id)
+        if rec is None:
+            return False, "unknown_lease"
+
         sealed[lease_id] = usage
         h = rec[0]
-        # the holder's admitted set has been measured; other unsealed leases of
-        # the same holder keep their own occupancy in _bounds
-        self._comm(account)[h] = usage
+        # the measured figure covers this lease only. a holder may hold orders
+        # admitted under several leases, so the sealed figures are summed;
+        # unsealed leases keep contributing their ceilings through _bounds.
+        ss = self.sealed_sum.setdefault(account, {})
+        pr, pg = ss.get(h, (0, 0))
+        ss[h] = (pr + usage[0], pg + usage[1])
+        comm = self._comm(account)
+        cr, cg = comm.get(h, (0, 0))
+        comm[h] = (max(cr, ss[h][0]), max(cg, ss[h][1]))
         del auth[lease_id]
         return True, "released"
 

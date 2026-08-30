@@ -31,8 +31,11 @@ class Symbol:
 
 
 class RiskModel:
-    def __init__(self, symbols, addon_kappa, addon_scale):
+    def __init__(self, symbols, addon_kappa, addon_scale, grid=FACTOR_GRID):
         # symbols: iterable of Symbol. addon_kappa / addon_scale parameterise A.
+        # grid: the scenario set; its width is what the admission-path cost
+        # scales with.
+        self.grid = tuple(grid)
         self.symbols = {s.name: s for s in symbols}
         self.order = tuple(sorted(self.symbols))       # fixed iteration order
         self.addon_kappa = addon_kappa
@@ -40,30 +43,48 @@ class RiskModel:
 
     # ---- scenario term -------------------------------------------------
 
-    def loss(self, positions, f):
-        """Loss of `positions` under the scenario with factor value f.
+    DEN = FACTOR_DEN * BETA_DEN
 
-        positions maps symbol name -> signed lots. Long positions lose when the
-        factor is negative. The sum is exact; the division to undo the factor
-        and beta denominators is applied once, rounding up.
+    def loss_num(self, positions, f):
+        """Exact numerator of the loss under the scenario with factor value f.
+
+        Linear in positions, which is what lets a worst-case fill subset be
+        computed per scenario rather than by enumeration.
         """
         num = 0
         for name, qty in positions.items():
             if qty == 0:
                 continue
-            s = self.symbols[name]
-            num += -qty * s.beta * f * s.scan
-        den = FACTOR_DEN * BETA_DEN
-        # ceiling division, valid for negative numerators too
+            sym = self.symbols[name]
+            num += -qty * sym.beta * f * sym.scan
+        return num
+
+    def leg_num(self, name, qty, f):
+        """Numerator contributed by one signed quantity of one symbol."""
+        sym = self.symbols[name]
+        return -qty * sym.beta * f * sym.scan
+
+    @staticmethod
+    def ceil_div(num, den):
         return -((-num) // den)
 
+    def loss(self, positions, f):
+        return self.ceil_div(self.loss_num(positions, f), self.DEN)
+
     def R(self, positions):
-        worst = 0
-        for f in FACTOR_GRID:
-            v = self.loss(positions, f)
-            if v > worst:
-                worst = v
-        return worst
+        """Worst loss over the grid, floored at zero.
+
+        Taken on numerators and divided once. Ceiling division is monotone, so
+        max_f ceil(n_f/d) equals ceil(max_f n_f / d) and the two forms agree.
+        """
+        worst_num = None
+        for f in self.grid:
+            n = self.loss_num(positions, f)
+            if worst_num is None or n > worst_num:
+                worst_num = n
+        if worst_num is None or worst_num <= 0:
+            return 0
+        return self.ceil_div(worst_num, self.DEN)
 
     # ---- add-on term ---------------------------------------------------
 

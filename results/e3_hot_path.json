@@ -1,0 +1,98 @@
+[
+  {
+    "grid": "7",
+    "scenarios": 7,
+    "mode": "incremental",
+    "open_orders": 50,
+    "admit_p50_ns": 3208.0,
+    "admit_p95_ns": 4166,
+    "fill_p50_ns": 3334.0,
+    "fill_p95_ns": 3750,
+    "cancel_p50_ns": 1125.0,
+    "cancel_p95_ns": 1541
+  },
+  {
+    "grid": "7",
+    "scenarios": 7,
+    "mode": "full recompute",
+    "open_orders": 50,
+    "admit_p50_ns": 111333.0,
+    "admit_p95_ns": 206834,
+    "fill_p50_ns": 3291.0,
+    "fill_p95_ns": 3625,
+    "cancel_p50_ns": 1062.5,
+    "cancel_p95_ns": 1208
+  },
+  {
+    "grid": "7",
+    "scenarios": 7,
+    "mode": "incremental",
+    "open_orders": 500,
+    "admit_p50_ns": 3166.0,
+    "admit_p95_ns": 3416,
+    "fill_p50_ns": 3292.0,
+    "fill_p95_ns": 3666,
+    "cancel_p50_ns": 1000.0,
+    "cancel_p95_ns": 1084
+  },
+  {
+    "grid": "7",
+    "scenarios": 7,
+    "mode": "full recompute",
+    "open_orders": 500,
+    "admit_p50_ns": 133208.5,
+    "admit_p95_ns": 233208,
+    "fill_p50_ns": 3250.0,
+    "fill_p95_ns": 3666,
+    "cancel_p50_ns": 1041.0,
+    "cancel_p95_ns": 1125
+  },
+  {
+    "grid": "16",
+    "scenarios": 16,
+    "mode": "incremental",
+    "open_orders": 50,
+    "admit_p50_ns": 4917.0,
+    "admit_p95_ns": 5250,
+    "fill_p50_ns": 6104.5,
+    "fill_p95_ns": 6666,
+    "cancel_p50_ns": 1479.5,
+    "cancel_p95_ns": 1625
+  },
+  {
+    "grid": "16",
+    "scenarios": 16,
+    "mode": "full recompute",
+    "open_orders": 50,
+    "admit_p50_ns": 112479.0,
+    "admit_p95_ns": 216291,
+    "fill_p50_ns": 6125.0,
+    "fill_p95_ns": 6625,
+    "cancel_p50_ns": 1458.0,
+    "cancel_p95_ns": 1667
+  },
+  {
+    "grid": "16",
+    "scenarios": 16,
+    "mode": "incremental",
+    "open_orders": 500,
+    "admit_p50_ns": 4958.0,
+    "admit_p95_ns": 5209,
+    "fill_p50_ns": 6167.0,
+    "fill_p95_ns": 6667,
+    "cancel_p50_ns": 1458.0,
+    "cancel_p95_ns": 1667
+  },
+  {
+    "grid": "16",
+    "scenarios": 16,
+    "mode": "full recompute",
+    "open_orders": 500,
+    "admit_p50_ns": 140208.0,
+    "admit_p95_ns": 239209,
+    "fill_p50_ns": 6167.0,
+    "fill_p95_ns": 6584,
+    "cancel_p50_ns": 1417.0,
+    "cancel_p95_ns": 1542
+  }
+]

@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from marginstream.risk import RiskModel, Symbol, FACTOR_GRID
 from marginstream.allocator2 import Allocator, _key
-from marginstream.gateway import Gateway
+from marginstream.gateway2 import Gateway
 from marginstream.sequencer import Sequencer
 
 ACC = "X"
@@ -186,9 +186,7 @@ def one_trial(seed, branches):
                 if rng.random() < 0.2:
                     from marginstream.sequencer import Seal
                     seal = Seal(lid, max(0, seal.terminal_seq - 1))
-                ok, _why = alloc.release(
-                    ACC, lid, seal,
-                    (gws[h].used_risk(ACC), gws[h].used_gross(ACC)), seqr)
+                ok, _why = alloc.release(ACC, lid, seal, seqr)
                 branches["terminal_release_accepted" if ok
                          else "terminal_release_refused"] += 1
             else:

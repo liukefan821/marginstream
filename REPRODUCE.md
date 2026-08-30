@@ -479,3 +479,102 @@ requiring collateral to be lowered first.
   designed.
 - Section 6.1's blast-radius claim still has to be replaced by an admission
   that the gateway is inside the trusted computing base.
+
+## Worst-fill round (2026-08-30)
+
+The previous rounds were about who may admit and for how long. This one is
+about what a gateway is actually holding. It holds orders, not positions: two
+live orders of opposite sign net to nothing, and if only one fills the account
+carries the other side.
+
+### Envelopes
+
+Because the loss under a fixed scenario is linear in positions, the worst fill
+subset does not have to be enumerated:
+
+    E_k   = loss_k(filled) + sum_i max(0, loss_k(order_i))
+    R_wf  = max(0, ceil(max_k E_k / DEN))
+    G_wf  = sum_s mark_s * max(|filled_s + buy_s|, |filled_s - sell_s|)
+
+Both are checked. Only the first would reopen the case where an order lowers
+the requirement while raising reachable gross notional.
+
+Four running totals are maintained per account per gateway and updated on each
+order state change, so admission costs one pass over the scenario grid however
+many orders are live.
+
+State transitions are one-directional: a cancel request releases nothing, and
+only an acknowledgement that has come back through the ordering point removes
+a reservation.
+
+### The interface the reviewer asked to close
+
+`release` no longer takes a usage figure from its caller. The ordering point
+records each admission's payload and each fill and cancel acknowledgement, and
+`Sequencer.reconcile` replays that log to produce the figure. A correct seal
+paired with an optimistic usage claim used to be accepted.
+
+A defect found while making that change: the per-lease figure was overwriting
+the holder's total, so a holder with orders admitted under two leases lost one
+of them. Sealed figures are now summed per holder.
+
+### Evidence
+
+    $ python3 tests/test_counterexamples.py
+    16 of 16 properties hold
+
+    $ python3 tests/test_worst_fill.py
+    6 of 6 properties hold
+
+    $ python3 tests/test_worst_fill_exhaustive.py
+    trials: 4000, orders per trial: 0..8, subsets enumerated per trial: up to 256
+    closed form equals enumeration on every trial, for both envelopes
+
+    $ python3 tests/test_lifecycle_fuzz.py
+    no admission worsened any scenario
+
+    $ python3 experiments/e1_worst_fill_safety.py
+    trials: 400, steps per trial: 200
+    actions: admitted=34480, refused=1463, filled=18958, cancel_requested=7544,
+      cancel_acked=7570, released=63, release_refused=0, reissued=8028
+    no state reached a requirement above equity
+
+    $ python3 experiments/e2_naive_netting_negative.py
+            mode   ceiling  admitted  requirement  collateral  shortfall
+      worst-fill      1000         2         1000        2000          0
+         netting      1000       402       201000        2000     400000
+
+    $ python3 experiments/e3_hot_path_benchmark.py
+    python 3.12.3 on Linux x86_64; 4000 repetitions per figure
+     grid  orders             mode  admit p50  admit p95  fill p50  cancel p50
+        7      50      incremental     4055.0      22552    3657.0      1364.5
+        7      50   full recompute   119728.5     213156    3537.0      1266.0
+        7     500      incremental     3866.0       5551    3702.5      1301.0
+        7     500   full recompute   144458.0     243663    3661.0      1298.5
+       16      50      incremental     5659.0      28329    6524.0      1763.0
+       16      50   full recompute   120396.0     232955    6723.0      1852.0
+       16     500      incremental     5768.0       7810    6734.0      1741.0
+       16     500   full recompute   154866.0     250187    6314.0      1723.5
+    figures in nanoseconds
+
+Reading E3: incremental admission does not grow with the number of live orders
+(3,866 ns at 500 orders against 4,055 ns at 50), while full recompute does
+(119,728 to 144,458 ns at the same widths). That is the shape the design
+claims. The absolute figures are CPython on a shared machine and are three
+orders of magnitude away from what §1.7 assumes for a compiled implementation;
+they support the scaling argument and not the latency target.
+
+E2 is the control that makes E1's clean run mean something: with netting
+instead of worst-fill, the same script admits 402 orders against a ceiling of
+1,000, and once the buys fill the requirement is 201,000 against 2,000 of
+collateral.
+
+### Still open
+
+- Snapshot and replay recovery for the gateway's order state.
+- Cost basis, realised profit and loss, and fees.
+- The old E1/E2/E4/E5 remain results from earlier interfaces and are not
+  claimed as current. The schedule ablation measured by accepted-order count
+  has lost its argument and should be replaced rather than extended.
+- Section 6.1's blast-radius claim still needs replacing with an admission that
+  the gateway is inside the trusted computing base.

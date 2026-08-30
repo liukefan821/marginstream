@@ -1,0 +1,24 @@
+[
+  {
+    "worst_fill": true,
+    "ceiling": 1000,
+    "orders_admitted": 2,
+    "filled": {
+      "A": 10
+    },
+    "requirement": 1000,
+    "collateral": 2000,
+    "worst_shortfall": 0
+  },
+  {
+    "worst_fill": false,
+    "ceiling": 1000,
+    "orders_admitted": 402,
+    "filled": {
+      "A": 2010
+    },
+    "requirement": 201000,
+    "collateral": 2000,
+    "worst_shortfall": 400000
+  }
+]

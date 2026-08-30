@@ -37,10 +37,26 @@ class Sequencer:
     def __init__(self):
         self.last_seq = {}          # lease_id -> last admission seq accepted
         self.fenced = {}            # lease_id -> Seal
+        self.log = {}               # (lease_id, seq) -> payload
+        self.fills = {}             # order_id -> filled quantity
+        self.cancelled = set()      # order_ids acknowledged as cancelled
         self.rejected = 0
 
-    def submit(self, lease_id, admission_seq):
-        """Return (accepted, reason)."""
+    def submit(self, lease_id, admission_seq, order_id, account, symbol, qty):
+        """Return (accepted, reason).
+
+        The payload is recorded, so a reconciliation can be computed from this
+        log rather than taken on trust from whoever reports it. A retry of an
+        entry already accepted, carrying the same payload, succeeds again; the
+        same number with a different payload is a conflict.
+        """
+        key = (lease_id, admission_seq)
+        payload = (order_id, account, symbol, qty)
+        if key in self.log:
+            if self.log[key] == payload:
+                return True, "idempotent_retry"
+            self.rejected += 1
+            return False, "conflicting_payload"
         if lease_id in self.fenced:
             self.rejected += 1
             return False, "lease_fenced"
@@ -49,7 +65,67 @@ class Sequencer:
             self.rejected += 1
             return False, "sequence_gap"
         self.last_seq[lease_id] = admission_seq
+        self.log[key] = payload
         return True, "ok"
+
+    def record_fill(self, order_id, qty):
+        """An authoritative fill. Recorded here so a reconciliation can be
+        computed from this log rather than reported by the holder."""
+        self.fills[order_id] = self.fills.get(order_id, 0) + qty
+
+    def record_cancel(self, order_id):
+        self.cancelled.add(order_id)
+
+    def reconcile(self, lease_id, risk):
+        """Replay the log for one lease and return its worst-fill occupancy.
+
+        Filled quantities become positions; whatever an order has left, and has
+        not been acknowledged as cancelled, is still able to fill.
+        """
+        filled = {}
+        remaining = []
+        for order_id, _acct, symbol, qty in self.admissions_of(lease_id):
+            done = self.fills.get(order_id, 0)
+            if done:
+                filled[symbol] = filled.get(symbol, 0) + done
+            rest = qty - done
+            if rest and order_id not in self.cancelled:
+                remaining.append((symbol, rest))
+
+        worst = None
+        for f in risk.grid:
+            v = risk.loss_num(filled, f)
+            for symbol, rest in remaining:
+                leg = risk.leg_num(symbol, rest, f)
+                if leg > 0:
+                    v += leg
+            if worst is None or v > worst:
+                worst = v
+        r = 0 if worst is None or worst <= 0 else risk.ceil_div(worst, risk.DEN)
+
+        buy, sell = {}, {}
+        for symbol, rest in remaining:
+            if rest > 0:
+                buy[symbol] = buy.get(symbol, 0) + rest
+            else:
+                sell[symbol] = sell.get(symbol, 0) - rest
+        g = 0
+        for symbol in set(filled) | set(buy) | set(sell):
+            mark = risk.symbols[symbol].mark
+            fq = filled.get(symbol, 0)
+            g += mark * max(abs(fq + buy.get(symbol, 0)),
+                            abs(fq - sell.get(symbol, 0)))
+        return (r, g)
+
+    def admissions_of(self, lease_id):
+        """Every payload recorded under a lease, in order."""
+        out = []
+        n = self.last_seq.get(lease_id, 0)
+        for i in range(1, n + 1):
+            entry = self.log.get((lease_id, i))
+            if entry is not None:
+                out.append(entry)
+        return out
 
     def fence(self, lease_id):
         """Stop accepting anything under this lease and return its seal.
