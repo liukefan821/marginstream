@@ -70,9 +70,19 @@ class RiskModel:
     def gross(self, positions):
         return sum(abs(q) * self.symbols[n].mark for n, q in positions.items())
 
+    def A_num(self, gross):
+        """Add-on numerator, exact. Convex, zero at zero, and super-additive
+        without qualification because no division happens here."""
+        return self.addon_kappa * gross * gross
+
+    def A_den(self):
+        return self.addon_scale
+
     def A_of_gross(self, gross):
-        # quadratic in gross notional: convex, zero at zero
-        return (self.addon_kappa * gross * gross + self.addon_scale - 1) // self.addon_scale
+        """Add-on in the same units as R. Rounds up, and is only ever computed
+        once, centrally, on the account's total gross. Rounded values are never
+        summed, because summing them is what breaks super-additivity."""
+        return (self.A_num(gross) + self.addon_scale - 1) // self.addon_scale
 
     def A(self, positions):
         return self.A_of_gross(self.gross(positions))
@@ -84,12 +94,26 @@ class RiskModel:
 
     # ---- helpers used by shards ----------------------------------------
 
-    def marginal_R(self, positions, name, qty):
-        """Increase in R caused by adding qty lots of `name` to `positions`."""
-        before = self.R(positions)
+    def R_after(self, positions, name, qty):
+        """R of the position set that results from adding qty lots of `name`.
+
+        The admission rule compares this absolute value against a lease. An
+        earlier version compared the increment instead, which does not bound
+        the account's requirement: a position flipped from short to long leaves
+        the local requirement unchanged while the account's requirement moves
+        to its maximum. See tests/test_counterexamples.py, c1."""
         after = dict(positions)
         after[name] = after.get(name, 0) + qty
-        return self.R(after) - before
+        return self.R(after)
+
+    def gross_after(self, positions, name, qty):
+        after = dict(positions)
+        after[name] = after.get(name, 0) + qty
+        return self.gross(after)
+
+    def marginal_R(self, positions, name, qty):
+        """Retained for reporting. Not used by the admission rule."""
+        return self.R_after(positions, name, qty) - self.R(positions)
 
     def min_margin_rate_num(self):
         """Numerator of the smallest R-per-notional ratio across symbols.

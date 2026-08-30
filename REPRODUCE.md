@@ -105,3 +105,54 @@ true state. Writes `results/e5_adversarial.json`.
          naive        True    62     6            12   480    129611
        ratchet       False    58     6             0   480    129039
        ratchet        True    49     4             5   480    130690
+
+## Mechanism revision after external review (2026-08-30)
+
+`review/2026-08-30_external_hostile_review.md` produced five counterexamples
+against the implementation. All five were reproduced against the code before
+any change was made, and are pinned in `tests/test_counterexamples.py`.
+
+What changed:
+
+- **Admission compares absolute envelopes, not increments.** Charging the
+  increase in a gateway's requirement does not bound the account's requirement:
+  a leg flipped from short to long leaves the local value unchanged while the
+  account's value moves to its maximum. `Gateway.admit` now compares
+  `R(admitted set + order)` against the lease.
+- **The lease carries two resources.** An order can reduce a gateway's
+  requirement while raising gross notional, and the add-on term is a function
+  of gross. Risk envelope and gross envelope are issued and checked separately.
+- **The add-on is compared through exact integers.** Ceiling-rounded add-on
+  values are not super-additive at small arguments; the safety condition now
+  multiplies through by the denominator instead of rounding.
+- **Leases expire.** A generation bump alone does not reach a partitioned
+  gateway. Leases carry a term and a gateway past its term refuses without any
+  message.
+- **The risk decomposition is partitioned by gateway, not by symbol.** Lemma 1
+  holds for any partition, and the gateway is where admission happens.
+
+What did not survive: the claim that a shrinking schedule makes the mechanism
+safe. It does not, because a lease cannot reduce a position it has already
+admitted. The safety condition is
+
+    2 * sum_g risk_g + A(sum_g gross_g) <= collateral
+
+which contains no market state. The schedule remains a local trigger and a
+capacity lever, and c5 tests the trigger rather than a guarantee.
+
+    $ python3 tests/test_counterexamples.py
+    [pass] c1 the envelope bounds the global requirement
+    [pass] c2 gross notional stays inside its own envelope
+    [pass] c3 add-on is super-additive in the units the condition uses
+    [pass] c4 an undelivered revocation takes effect by expiry
+    [pass] c5 the gateway detects the condition locally on the tick
+    5 of 5 properties hold
+
+    $ python3 tests/test_envelope_fuzz.py
+    trials: 400, orders per trial: 300
+    no trial produced a requirement above collateral
+
+`experiments/e1`, `e2`, `e4` and `e5` still target the previous allocator and
+gateway interfaces and have not been re-run against the revised mechanism.
+Their recorded output above describes the implementation as it was before this
+revision.

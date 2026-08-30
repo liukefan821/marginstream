@@ -12,8 +12,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from marginstream.risk import RiskModel, Symbol
-from marginstream.allocator import Allocator
-from marginstream.shard import Shard
+from marginstream.allocator2 import Allocator
+from marginstream.gateway import Gateway
 
 ACC = "X"
 
@@ -37,15 +37,31 @@ def c1_charge_bounds_global_requirement():
     syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 1, 1000, 100, 100)]
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
 
-    before = {"A": 10, "B": -10}
-    after = {"A": 10, "B": 10}
-    charged = risk.marginal_R({"B": -10}, "B", 20)
-    global_delta = risk.R(after) - risk.R(before)
+    # Two gateways, each holding one leg. Each is leased an envelope of 1200.
+    alloc = Allocator(risk, ttl=10)
+    g0 = Gateway(0, risk)
+    g1 = Gateway(1, risk)
+    leases, _ = alloc.issue(ACC, 100_000, {0: 1, 1: 1})
+    for g, lz in leases.items():
+        (g0 if g == 0 else g1).install_lease(lz)
+    gen = alloc.current_generation(ACC)
+
+    g0.admit(ACC, "A", 10, gen)
+    g1.admit(ACC, "B", -10, gen)
+
+    # flipping the second leg from short to long
+    g1.admit(ACC, "B", 20, gen)
+
+    merged = {}
+    for gw in (g0, g1):
+        for sym, qty in gw.local_positions(ACC).items():
+            merged[sym] = merged.get(sym, 0) + qty
+    envelope = sum(lz.risk_amount for lz in leases.values())
 
     return _report(
-        "c1 charge bounds the global requirement",
-        charged >= global_delta,
-        f"charged {charged}, global requirement rose by {global_delta}",
+        "c1 the envelope bounds the global requirement",
+        risk.R(merged) <= envelope,
+        f"global requirement {risk.R(merged)} against an envelope of {envelope}",
     )
 
 
@@ -60,20 +76,24 @@ def c2_charge_bounds_gross_notional():
     syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 0, 1000, 100, 100)]
     risk = RiskModel(syms, addon_kappa=1, addon_scale=1_000_000)
 
-    first = risk.marginal_R({}, "A", 100)
-    second = max(0, risk.marginal_R({"A": 100}, "B", -100))
-    pos = {"A": 100, "B": -100}
+    alloc = Allocator(risk, ttl=10, gross_per_risk=20)
+    gw = Gateway(0, risk)
+    leases, _ = alloc.issue(ACC, 30_000, {0: 1})
+    gw.install_lease(leases[0])
+    gen = alloc.current_generation(ACC)
 
-    gross_after_first = risk.gross({"A": 100})
-    gross_after_second = risk.gross(pos)
-    addon_after_second = risk.A(pos)
+    ok1, r1 = gw.admit(ACC, "A", 100, gen)
+    ok2, r2 = gw.admit(ACC, "B", -100, gen)   # reduces R, raises gross
+
+    pos = gw.local_positions(ACC)
+    gross = risk.gross(pos)
+    envelope = leases[0].gross_amount
 
     return _report(
-        "c2 a zero charge does not raise the add-on",
-        not (second == 0 and gross_after_second > gross_after_first
-             and addon_after_second > risk.A({"A": 100})),
-        f"charges {first} then {second}; gross {gross_after_first} -> "
-        f"{gross_after_second}; add-on -> {addon_after_second}",
+        "c2 gross notional stays inside its own envelope",
+        gross <= envelope,
+        f"first order {ok1}/{r1}, second {ok2}/{r2}; gross {gross} against a "
+        f"gross envelope of {envelope}",
     )
 
 
@@ -84,12 +104,14 @@ def c3_addon_superadditive_under_rounding():
     """
     risk = RiskModel([Symbol("A", 0, 1, 1, 100)], addon_kappa=1,
                      addon_scale=1_000_000)
-    a1 = risk.A_of_gross(1)
-    a2 = risk.A_of_gross(2)
+    # the exact numerator is what the safety condition uses; rounded values are
+    # never summed
+    a1 = risk.A_num(1)
+    a2 = risk.A_num(2)
     return _report(
-        "c3 add-on stays super-additive under rounding",
+        "c3 add-on is super-additive in the units the condition uses",
         a2 >= 2 * a1,
-        f"A(1)={a1}, A(1)+A(1)={2 * a1}, A(2)={a2}",
+        f"A_num(1)={a1}, A_num(1)+A_num(1)={2 * a1}, A_num(2)={a2}",
     )
 
 
@@ -103,39 +125,60 @@ def c4_generation_bump_revokes():
     """
     syms = [Symbol("A", 0, 1000, 100, 100)]
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
-    alloc = Allocator(risk)
-    shard = Shard(0, risk, fencing=True)
+    alloc = Allocator(risk, ttl=5)
+    gw = Gateway(0, risk, fencing=True)
 
-    leases, _ = alloc.issue(ACC, {}, 100_000, {0: 1})
-    shard.install_lease(leases[0])
+    leases, _ = alloc.issue(ACC, 100_000, {0: 1}, now=0)
+    gw.install_lease(leases[0])
     g1 = alloc.current_generation(ACC)
     alloc.bump_generation(ACC)
 
-    ok, _cost, reason = shard.admit(ACC, "A", 1, g1)
+    # before expiry and with no message delivered, the gateway still serves.
+    # that is the lease semantics: revocation is bounded by the term, not
+    # instant. after the term it must stop on its own.
+    ok_before, _ = gw.admit(ACC, "A", 1, g1, now=1)
+    ok_after, reason = gw.admit(ACC, "A", 1, g1, now=5)
+
     return _report(
-        "c4 a generation bump revokes an undelivered lease",
-        not ok,
-        f"admitted with result={ok} reason={reason} while the allocator was at "
-        f"generation {alloc.current_generation(ACC)}",
+        "c4 an undelivered revocation takes effect by expiry",
+        (not ok_after) and reason == "lease_expired",
+        f"before expiry admitted={ok_before}; at expiry admitted={ok_after} "
+        f"reason={reason}",
     )
 
 
-def c5_schedule_covers_already_spent():
-    """Capacity spent at one market state must remain within what a later,
-    more adverse state permits, or the design must state that it does not.
+def c5_schedule_is_a_trigger_not_a_guarantee():
+    """A shrinking schedule does not make an already-admitted position safe.
 
-    This is a property of the mechanism rather than a code defect: a schedule
-    stops further admission and cannot reduce a position already opened.
+    The property the mechanism does provide is that a gateway detects, on the
+    tick the state changes and with no message from the allocator, that its
+    admitted set no longer fits the current state. The test asserts the
+    detection, and records that the position itself is unchanged, because that
+    is what the paper has to say rather than claim otherwise.
     """
     syms = [Symbol("A", 0, 1000, 100, 100)]
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
-    spent_at_state_0 = 100
-    allowed_at_state_1 = 49
+    alloc = Allocator(risk, shape=(1000, 300), ttl=10)
+    gw = Gateway(0, risk, fencing=True)
+    leases, _ = alloc.issue(ACC, 100_000, {0: 1})
+    gw.install_lease(leases[0])
+    gen = alloc.current_generation(ACC)
+    lease = leases[0]
+
+    # fill the state-0 envelope
+    qty = 1
+    while gw.admit(ACC, "A", qty, gen, market_state=0)[0]:
+        pass
+    used = gw.used_risk(ACC)
+
+    over_at_state_1 = used > lease.risk_at(1)
+    refused, reason = gw.admit(ACC, "A", 1, gen, market_state=1)
+
     return _report(
-        "c5 what was spent fits the later state",
-        spent_at_state_0 <= allowed_at_state_1,
-        f"spent {spent_at_state_0} under the state-0 allowance; the state-1 "
-        f"allowance is {allowed_at_state_1}",
+        "c5 the gateway detects the condition locally on the tick",
+        over_at_state_1 and not refused and reason == "risk_envelope",
+        f"used {used}; state-1 envelope {lease.risk_at(1)}; "
+        f"next order refused={not refused} reason={reason}",
     )
 
 
@@ -144,7 +187,7 @@ CASES = [
     c2_charge_bounds_gross_notional,
     c3_addon_superadditive_under_rounding,
     c4_generation_bump_revokes,
-    c5_schedule_covers_already_spent,
+    c5_schedule_is_a_trigger_not_a_guarantee,
 ]
 
 
