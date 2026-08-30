@@ -11,7 +11,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from marginstream.risk import RiskModel, Symbol
+from marginstream.risk import RiskModel, Symbol, FACTOR_GRID
 from marginstream.allocator2 import Allocator
 from marginstream.gateway import Gateway
 
@@ -37,7 +37,7 @@ def c1_charge_bounds_global_requirement():
     syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 1, 1000, 100, 100)]
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
 
-    # Two gateways, each holding one leg. Each is leased an envelope of 1200.
+    # Two gateways, each holding one leg, each leased from one solve.
     alloc = Allocator(risk, ttl=10)
     g0 = Gateway(0, risk)
     g1 = Gateway(1, risk)
@@ -141,7 +141,7 @@ def c4_generation_bump_revokes():
 
     return _report(
         "c4 an undelivered revocation takes effect by expiry",
-        (not ok_after) and reason == "lease_expired",
+        ok_before and (not ok_after) and reason == "lease_expired",
         f"before expiry admitted={ok_before}; at expiry admitted={ok_after} "
         f"reason={reason}",
     )
@@ -220,7 +220,7 @@ def c6_no_capacity_reissued_over_a_live_lease():
 
     return _report(
         "c6 capacity is not reissued over an unexpired lease",
-        risk.M(merged) <= collateral,
+        worst_breach(risk, merged, collateral) == 0,
         f"old spent {old.used_risk(ACC)}, replacement spent "
         f"{new.used_risk(ACC)}, requirement {risk.M(merged)} against "
         f"collateral {collateral}",
@@ -262,10 +262,150 @@ def c7_weight_migration_respects_existing_usage():
 
     return _report(
         "c7 a weight change respects what a gateway already holds",
-        risk.M(merged) <= collateral,
+        worst_breach(risk, merged, collateral) == 0,
         f"g0 held {used0} and was re-leased "
         f"{leases2[0].risk_amount}; requirement {risk.M(merged)} against "
         f"collateral {collateral}",
+    )
+
+
+
+def worst_breach(risk, pos, collateral):
+    """How far the requirement exceeds equity, taken over the whole grid.
+
+    Comparing against collateral alone is not the invariant: equity at an
+    adverse scenario is collateral less the loss the portfolio takes there.
+    """
+    m = risk.M(pos)
+    worst = 0
+    for f in FACTOR_GRID:
+        gap = m - (collateral - risk.loss(pos, f))
+        if gap > worst:
+            worst = gap
+    return worst
+
+
+def merge(gws, account="X"):
+    out = {}
+    for gw in gws:
+        for sym, qty in gw.local_positions(account).items():
+            out[sym] = out.get(sym, 0) + qty
+    return out
+
+
+def c8_expiry_does_not_release_exposure():
+    """A lease term ends a holder's authority to admit. It does not remove the
+    positions that holder already admitted, so the capacity those positions
+    occupy must not be handed to anyone else until the positions are gone.
+    """
+    syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 1, 1000, 100, 100)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    collateral = 1_000
+
+    alloc = Allocator(risk, ttl=100)
+    old = Gateway(0, risk)
+    leases, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
+    old.install_lease(leases[0])
+    gen1 = alloc.current_generation(ACC)
+    while old.admit(ACC, "A", 1, gen1, now=1)[0]:
+        pass
+
+    # the old lease runs out; its positions do not
+    alloc.bump_generation(ACC)
+    alloc.observe_usage(ACC, {0: (old.used_risk(ACC), old.used_gross(ACC))})
+    new_leases, _ = alloc.issue(ACC, collateral, {1: 1}, now=101)
+    new = Gateway(1, risk)
+    new.install_lease(new_leases[1])
+    gen2 = alloc.current_generation(ACC)
+    while new.admit(ACC, "B", 1, gen2, now=102)[0]:
+        pass
+
+    pos = merge([old, new])
+    breach = worst_breach(risk, pos, collateral)
+    return _report(
+        "c8 expiry releases authority, not exposure",
+        breach == 0,
+        f"old holds {old.used_risk(ACC)}, replacement was granted "
+        f"{new_leases[1].risk_amount}; requirement exceeds equity by {breach}",
+    )
+
+
+def c9_infeasible_state_is_not_local_reduce_only():
+    """When the floors do not fit, issuing ordinary envelopes at the floor is
+    not a safe fallback.
+
+    An order that lowers one gateway's own requirement can raise the account's,
+    because it removes a hedge held on another gateway. Local reduction is not
+    global reduction.
+    """
+    syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 1, 1000, 100, 100)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    collateral = 1_000
+
+    alloc = Allocator(risk, ttl=1000)
+    g0, g1 = Gateway(0, risk), Gateway(1, risk)
+    leases, _ = alloc.issue(ACC, 100_000, {0: 1, 1: 1}, now=0)
+    g0.install_lease(leases[0]); g1.install_lease(leases[1])
+    gen = alloc.current_generation(ACC)
+    g0.admit(ACC, "A", 10, gen, now=1)
+    g1.admit(ACC, "B", -10, gen, now=1)
+    # perfectly hedged: the account requires nothing
+    before = worst_breach(risk, merge([g0, g1]), collateral)
+
+    alloc.bump_generation(ACC)
+    floors = {0: g0.used_risk(ACC), 1: g1.used_risk(ACC)}
+    gfloors = {0: g0.used_gross(ACC), 1: g1.used_gross(ACC)}
+    l2, scale = alloc.issue(ACC, collateral, {0: 1, 1: 1}, floors=floors,
+                            now=2, gross_floors=gfloors)
+    g0.install_lease(l2[0]); g1.install_lease(l2[1])
+    gen2 = alloc.current_generation(ACC)
+
+    # g1 closes its leg. locally this reduces both resources.
+    ok, reason = g1.admit(ACC, "B", 10, gen2, now=3)
+    after = worst_breach(risk, merge([g0, g1]), collateral)
+
+    return _report(
+        "c9 an infeasible solve does not permit local risk reduction",
+        after == 0,
+        f"scale={scale}; closing one leg admitted={ok} ({reason}); "
+        f"breach {before} -> {after}",
+    )
+
+
+def c10_incarnations_are_counted_separately():
+    """Two processes that have held the same gateway identity can both be
+    live. Capacity has to be summed across incarnations, not collapsed by id.
+    """
+    syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 1, 1000, 100, 100)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    collateral = 1_000
+
+    alloc = Allocator(risk, ttl=100)
+    first = Gateway(0, risk)
+    l1, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
+    first.install_lease(l1[0])
+    gen1 = alloc.current_generation(ACC)
+    while first.admit(ACC, "A", 1, gen1, now=1)[0]:
+        pass
+
+    # the process restarts and reuses the same identity
+    alloc.bump_generation(ACC)
+    alloc.observe_usage(ACC, {(0, 0): (first.used_risk(ACC),
+                                       first.used_gross(ACC))})
+    l2, _ = alloc.issue(ACC, collateral, {(0, 1): 1}, now=2)
+    second = Gateway(0, risk, incarnation=1)
+    second.install_lease(l2[(0, 1)])
+    gen2 = alloc.current_generation(ACC)
+    while second.admit(ACC, "B", 1, gen2, now=3)[0]:
+        pass
+
+    pos = merge([first, second])
+    breach = worst_breach(risk, pos, collateral)
+    return _report(
+        "c10 two incarnations of one identity are counted separately",
+        breach == 0,
+        f"first spent {first.used_risk(ACC)}, second spent "
+        f"{second.used_risk(ACC)}; requirement exceeds equity by {breach}",
     )
 
 
@@ -277,6 +417,9 @@ CASES = [
     c5_schedule_is_a_trigger_not_a_guarantee,
     c6_no_capacity_reissued_over_a_live_lease,
     c7_weight_migration_respects_existing_usage,
+    c8_expiry_does_not_release_exposure,
+    c9_infeasible_state_is_not_local_reduce_only,
+    c10_incarnations_are_counted_separately,
 ]
 
 

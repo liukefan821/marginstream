@@ -20,13 +20,20 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from marginstream.risk import RiskModel, Symbol, FACTOR_GRID
-from marginstream.allocator2 import Allocator
+from marginstream.allocator2 import Allocator, _key
 from marginstream.gateway import Gateway
 
 ACC = "X"
 TRIALS = 300
 GENERATIONS = 6
 ORDERS_PER_GEN = 60
+
+
+BRANCHES = {
+    "join": 0, "retire": 0, "retire_with_positions": 0,
+    "same_id_restart": 0, "collateral_cut": 0, "quarantine": 0,
+    "lease_lost": 0,
+}
 
 
 def merged(gws):
@@ -63,47 +70,74 @@ def one_trial(seed):
     ttl = rng.randrange(2, 20)
 
     alloc = Allocator(risk, ttl=ttl, gross_per_risk=rng.randrange(5, 60))
-    gws = {g: Gateway(g, risk) for g in pool}
+    # holders are (gateway_id, incarnation); retired holders stay in `all_gws`
+    # because their positions do not go away when their authority does
+    pool = [(g, 0) for g in pool]
+    all_gws = {h: Gateway(h[0], risk, incarnation=h[1]) for h in pool}
     now = 0
     admissions = 0
+    branches = BRANCHES
 
     for _ in range(GENERATIONS):
-        # the gateway set may change between generations
-        if rng.random() < 0.3 and len(pool) < 6:
-            new_id = max(pool) + 1
-            pool.append(new_id)
-            gws[new_id] = Gateway(new_id, risk)
-        weights = {g: rng.randrange(0, 4) for g in pool}
+        r = rng.random()
+        if r < 0.18 and len(pool) < 6:                    # distinct-id join
+            new_id = max(h[0] for h in all_gws) + 1
+            h = (new_id, 0)
+            pool.append(h); all_gws[h] = Gateway(new_id, risk)
+            branches["join"] += 1
+        elif r < 0.34 and len(pool) > 1:                  # retire a holder
+            h = rng.choice(pool)
+            pool.remove(h)
+            alloc.retire(ACC, h)
+            if all_gws[h].used_risk(ACC) > 0:
+                branches["retire_with_positions"] += 1
+            branches["retire"] += 1
+        elif r < 0.50:                                    # same id, new process
+            h = rng.choice(pool)
+            nh = (h[0], h[1] + 1)
+            pool.remove(h); pool.append(nh)
+            all_gws[nh] = Gateway(nh[0], risk, incarnation=nh[1])
+            branches["same_id_restart"] += 1
+
+        if rng.random() < 0.25:                           # collateral falls
+            collateral = max(1_000, (collateral * 7) // 10)
+            branches["collateral_cut"] += 1
+
+        weights = {h: rng.randrange(0, 4) for h in pool}
         if sum(weights.values()) == 0:
             weights[pool[0]] = 1
 
-        floors = {g: gws[g].used_risk(ACC) for g in pool}
-        gross_floors = {g: gws[g].used_gross(ACC) for g in pool}
+        floors = {h: all_gws[h].used_risk(ACC) for h in all_gws}
+        gross_floors = {h: all_gws[h].used_gross(ACC) for h in all_gws}
         alloc.bump_generation(ACC)
         leases, _scale = alloc.issue(ACC, collateral, weights,
                                      floors=floors, now=now,
                                      gross_floors=gross_floors)
+        if _scale is None:
+            branches["quarantine"] += 1
         gen = alloc.current_generation(ACC)
 
         # some gateways do not receive their replacement
         for g, lz in leases.items():
             if rng.random() < 0.25:
+                branches["lease_lost"] += 1
                 continue
-            gws[g].install_lease(lz)
+            all_gws[_key(g)].install_lease(lz)
 
         for _ in range(ORDERS_PER_GEN):
             now += 1
-            g = rng.choice(pool)
+            h = rng.choice(list(all_gws))
             sym = rng.choice(syms).name
             qty = rng.choice([-40, -13, -5, -1, 1, 5, 13, 40])
             stamped = gen if rng.random() < 0.8 else max(1, gen - 1)
-            ok, _reason = gws[g].admit(ACC, sym, qty, stamped, now=now)
+            ok, _reason = all_gws[h].admit(ACC, sym, qty, stamped, now=now)
             if not ok:
                 continue
             admissions += 1
-            breach = worst_equity_breach(risk, merged(gws), collateral)
+            breach = worst_equity_breach(risk, merged(all_gws), collateral)
             if breach > 0:
-                return (seed, breach, collateral, dict(merged(gws))), admissions
+                return (seed, breach, collateral,
+                        dict(merged(all_gws))), admissions
 
         now += rng.randrange(0, ttl + 2)
 
@@ -120,6 +154,8 @@ def main():
             failures.append(f)
     print(f"trials: {TRIALS}, generations per trial: {GENERATIONS}, "
           f"admissions: {total_admissions}")
+    print("branches exercised: " + ", ".join(
+        f"{k}={v}" for k, v in BRANCHES.items()))
     print("oracle: M(P) <= collateral - loss(P, k) for every k in the grid")
     if failures:
         print(f"FAIL: {len(failures)} trials breached")

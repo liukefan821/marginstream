@@ -137,8 +137,10 @@ admitted. The safety condition is
 
     2 * sum_g risk_g + A(sum_g gross_g) <= collateral
 
-which contains no market state. The schedule remains a local trigger and a
-capacity lever, and c5 tests the trigger rather than a guarantee.
+which contains no market state. The schedule remains a local trigger and an operational tightening. It is not a
+capacity mechanism: a flat lease at the level solved for is equally safe and
+admits at least as many orders as any decaying one. c5 tests the trigger rather
+than a guarantee.
 
     $ python3 tests/test_counterexamples.py
     [pass] c1 the envelope bounds the global requirement
@@ -219,3 +221,74 @@ Still open, and not claimed closed:
   many orders. Its remaining value is stress tightening, the local trigger, and
   whatever it saves in tail exposure and forced reduction, none of which is yet
   measured. Accepted-order count is not the metric for it.
+
+## Third review round (2026-08-30)
+
+Three further counterexamples, all reproduced against the code before any
+change. The rule they share is one line:
+
+> a lease term ends a holder's authority to admit; it never ends the exposure
+> that holder already created.
+
+- **c8, expiry released exposure.** A replacement brought up after the old term
+  ended was granted the capacity the old holder's positions still occupied.
+  The previous round's c6 missed it because its oracle compared against
+  collateral rather than against equity at each scenario, and the breach sat
+  exactly on that boundary.
+- **c9, an infeasible solve was not reduce-only.** Issuing ordinary envelopes
+  at the floor let a gateway close its own leg, which lowered that gateway's
+  requirement and raised the account's by removing a hedge held elsewhere.
+  Local risk reduction is not global risk reduction.
+- **c10, one identity, two live processes.** Outstanding capacity was keyed by
+  gateway id and collapsed by `max`, so a restarted process reusing its id
+  could spend a full ceiling alongside its predecessor.
+
+What changed:
+
+- Holders are `(gateway_id, incarnation)`. Capacity is summed across
+  incarnations rather than collapsed by identity.
+- Two quantities per holder, only one of which expires: **authority**, which
+  the term ends, and **committed exposure**, which only an authoritative
+  position reconciliation reduces. The solve covers every holder that appears
+  in either, including retired ones.
+- An infeasible solve issues leases in **quarantine** mode and the gateway
+  admits nothing. Reducing risk from that state needs a check against the whole
+  account.
+- The per-scenario equity oracle is used in c4, c6, c7, c8, c9 and c10, not
+  only in the fuzz.
+
+The lifecycle fuzz now retires holders, restarts processes under the same id,
+cuts collateral, and reports which branches it actually exercised.
+
+    $ python3 tests/test_counterexamples.py
+    10 of 10 properties hold
+
+    $ python3 tests/test_lifecycle_fuzz.py
+    trials: 300, generations per trial: 6, admissions: 5489
+    branches exercised: join=340, retire=209, retire_with_positions=131,
+      same_id_restart=359, collateral_cut=422, quarantine=27, lease_lost=1235
+    oracle: M(P) <= collateral - loss(P, k) for every k in the grid
+    no trial exceeded equity at any scenario
+
+    extended run: trials 1500, admissions 25870, breaches 0
+    branches: join=1657, retire=1143, retire_with_positions=675,
+      same_id_restart=1762, collateral_cut=2155, quarantine=192,
+      lease_lost=6306
+
+Two claims corrected rather than defended:
+
+- `gross_per_risk` fixes the ratio between the two ceilings, so the solver
+  moves along one ray through a two-dimensional feasible set. This is two
+  independent checks against a fixed-ratio issuance policy, not a two-resource
+  allocation, and the code says so.
+- The cross-generation lease lifecycle is evidence of rigour, not a
+  contribution. Expiry, incarnation, reissue and persistent occupancy are
+  standard lease machinery. The contribution remains the absolute scenario
+  envelope, the gross constraint that the add-on term forces, and admission
+  partitioned by gateway.
+
+Still open: a gateway tracks the orders it admitted, not the positions that
+filled; a gateway is a stateful authority whose crash and failover are not
+designed; and section 6.1's claim that a compromised gateway's blast radius is
+bounded by its lease has to be replaced by an admission that the gateway is
+inside the trusted computing base.

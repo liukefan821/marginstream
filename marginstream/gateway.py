@@ -24,8 +24,10 @@ matching shards.
 
 
 class Gateway:
-    def __init__(self, gateway_id, risk, fencing=True, ratchet=False):
+    def __init__(self, gateway_id, risk, fencing=True, ratchet=False,
+                 incarnation=0):
         self.id = gateway_id
+        self.incarnation = incarnation
         self.risk = risk
         self.fencing = fencing
         self.ratchet = ratchet
@@ -60,6 +62,11 @@ class Gateway:
 
         if now >= lease.expiry:
             return False, "lease_expired"
+
+        if getattr(lease, "mode", "normal") == "quarantine":
+            # local risk reduction is not global risk reduction, so nothing is
+            # admitted here without a check against the whole account
+            return False, "quarantine"
 
         if self.fencing:
             seen = max(self.seen_generation.get(account, 0), generation)
@@ -102,6 +109,8 @@ class Gateway:
             return "no_lease"
         if now >= lease.expiry:
             return "lease_expired"
+        if getattr(lease, "mode", "normal") == "quarantine":
+            return "quarantine"
 
         if self.ratchet:
             state = max(self.worst_state.get(account, 0), state)

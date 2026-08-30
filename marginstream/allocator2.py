@@ -1,51 +1,63 @@
 """Margin allocator.
 
-Runs off the order path. Once per epoch it solves, per account, for the largest
-lease envelope that keeps the account's requirement inside its collateral at
-every market state, and issues that envelope to the ingress gateways.
+Runs off the order path. Solves, per account, for lease ceilings that keep the
+account's requirement inside its equity at every scenario, and issues them to
+ingress gateways.
 
-The condition, with the absolute-envelope admission rule of `gateway.py`:
+With the absolute-envelope admission rule in `gateway.py`:
 
-    R(P')      <= sum_g risk_g          (Lemma 1 plus the admission rule)
+    R(P')      <= sum_h risk_h          (Lemma 1 plus the admission rule)
     loss(P',k) <= R(P')                 (R is a max over a set containing k)
-    A(P')      <= A(sum_g gross_g)      (A is increasing in gross)
+    A(P')      <= A(sum_h gross_h)      (A is increasing in gross)
 
-and the requirement to hold is `M(P') <= Collateral - loss(P', k)`, so
+so `M(P') <= Collateral - loss(P', k)` follows from
 
-    2 * sum_g risk_g + A(sum_g gross_g) <= Collateral
+    2 * sum_h risk_h + A(sum_h gross_h) <= Collateral
 
 The factor of two is a closure, not a margin: positions admitted during the
-epoch contribute both their own requirement and the loss they take at the
-realised state, and the second is bounded by the first.
+term contribute both their own requirement and the loss they take at the
+realised scenario, and the second is bounded by the first.
 
-The condition has no k in it. That is deliberate and it is the honest
-statement: a schedule that shrinks with the market does not make the mechanism
-safe, because a lease cannot reduce a position it has already admitted. What a
-shrinking schedule buys is a local trigger and capacity in calm states; safety
-comes from the envelope above holding at issuance.
+There is no market state in that condition. A schedule that shrinks with the
+market does not make the mechanism safe, because a lease cannot remove a
+position it has already admitted. A flat lease at the level solved for is
+equally safe and admits at least as many orders as any decaying one. The
+schedule is a local trigger and an operational tightening, not a capacity
+mechanism.
 
-Everything is exact integer arithmetic. The add-on is compared through its
-numerator and denominator rather than a rounded value, because rounded add-on
-values are not super-additive at small arguments; see
-tests/test_counterexamples.py, c3.
+The bookkeeping follows one rule:
+
+    a lease term ends a holder's authority to admit; it never ends the
+    exposure that holder already created.
+
+Two quantities are therefore tracked per holder and only one of them expires.
+
+A holder is `(gateway_id, incarnation)`. Identity alone is not enough: a
+process that restarts and reuses its gateway id is a different holder, and both
+may be live at once.
 """
-
-from dataclasses import dataclass
 
 DECAY_DEN = 1000
 
 
-@dataclass(frozen=True)
 class Lease:
-    account: str
-    epoch: int
-    generation: int
-    gateway: int
-    expiry: int                      # logical time at which this lease dies
-    risk_curve: tuple                # risk envelope per market state
-    gross_curve: tuple               # gross envelope per market state
+    __slots__ = ("account", "epoch", "generation", "gateway", "incarnation",
+                 "expiry", "mode", "risk_curve", "gross_curve")
 
-    def _at(self, curve, k):
+    def __init__(self, account, epoch, generation, gateway, incarnation,
+                 expiry, mode, risk_curve, gross_curve):
+        self.account = account
+        self.epoch = epoch
+        self.generation = generation
+        self.gateway = gateway
+        self.incarnation = incarnation
+        self.expiry = expiry
+        self.mode = mode                    # "normal" or "quarantine"
+        self.risk_curve = tuple(risk_curve)
+        self.gross_curve = tuple(gross_curve)
+
+    @staticmethod
+    def _at(curve, k):
         if k < 0:
             k = 0
         if k >= len(curve):
@@ -67,15 +79,19 @@ class Lease:
         return self.gross_curve[0]
 
 
+def _key(g):
+    return g if isinstance(g, tuple) else (g, 0)
+
+
 class Allocator:
     def __init__(self, risk, shape=(DECAY_DEN,), ttl=1, gross_per_risk=20,
                  residual=0):
-        """shape            non-increasing multipliers over market states
-        ttl              logical lifetime of an issued lease
-        gross_per_risk   how much gross envelope is issued per unit of risk
-                         envelope; the lever that decides how much hedging
-                         headroom an account gets
-        """
+        """`gross_per_risk` fixes the ratio at which gross ceiling is issued
+        alongside risk ceiling. The two resources are checked independently at
+        the gateway, but they are not solved for independently: the solver
+        moves along one ray through a two-dimensional feasible set. This is two
+        independent checks against a fixed-ratio issuance policy, not a
+        two-resource allocation."""
         self.risk = risk
         self.shape = tuple(shape)
         self.ttl = ttl
@@ -84,71 +100,94 @@ class Allocator:
         self.epoch = 0
         self.generation = {}
         self.issued = {}
-        # account -> {gateway: (expiry, risk_ceiling, gross_ceiling)}
-        # a lease stays live at its gateway until the gateway is handed a
-        # replacement or the term runs out, whichever comes first, and the
-        # allocator cannot know which happened
-        self.outstanding = {}
+        self.authority = {}       # account -> holder -> (expiry, r_ceil, g_ceil)
+        self.committed = {}       # account -> holder -> (r_used, g_used)
+
+    # ---- state -----------------------------------------------------------
+
+    def _auth(self, account):
+        return self.authority.setdefault(account, {})
+
+    def _comm(self, account):
+        return self.committed.setdefault(account, {})
+
+    def observe_usage(self, account, usage):
+        """Record what each holder's admitted set occupies. Values only rise
+        here; they fall through `reconcile`."""
+        comm = self._comm(account)
+        for g, (r, gr) in usage.items():
+            h = _key(g)
+            pr, pg = comm.get(h, (0, 0))
+            comm[h] = (max(pr, r), max(pg, gr))
+
+    def reconcile(self, account, usage):
+        """Set committed exposure from an authoritative position view. The only
+        path that reduces it."""
+        comm = self._comm(account)
+        for g, (r, gr) in usage.items():
+            comm[_key(g)] = (r, gr)
+
+    def retire(self, account, gateway):
+        """Drop a holder's authority. Its committed exposure stays until it has
+        been reconciled away."""
+        self._auth(account).pop(_key(gateway), None)
 
     # ---- safety condition ------------------------------------------------
 
-    def _ceilings(self, scale, weights, floors, gross_floors=None):
-        """Per-gateway ceilings at market state 0, never below the floor that
-        gateway's existing admitted set already occupies. Lowering a ceiling
-        below current usage does not remove the positions, so the ceiling has
-        to accommodate them or the account has to stop taking new risk."""
-        gross_floors = gross_floors or {}
+    def _ceilings(self, account, scale, weights):
+        comm = self._comm(account)
         total_w = sum(weights.values()) or 1
         out = {}
         for g, w in weights.items():
+            h = _key(g)
+            cr, cg = comm.get(h, (0, 0))
             share = (scale * w * self.shape[0]) // (total_w * DECAY_DEN)
-            # the ceiling has to cover both resources the gateway already
-            # occupies; a gross floor is expressed in risk units through the
-            # issuance ratio
-            gfloor = gross_floors.get(g, 0)
-            need_for_gross = -(-gfloor // self.gross_per_risk) if self.gross_per_risk else 0
-            out[g] = max(share, floors.get(g, 0), need_for_gross)
+            need_for_gross = (-(-cg // self.gross_per_risk)
+                              if self.gross_per_risk else 0)
+            out[h] = max(share, cr, need_for_gross)
         return out
 
-    def _live_after(self, account, new_ceilings, now):
-        """What can be spent once the new leases are out.
+    def _bounds(self, account, ceilings, now):
+        """Per holder, the most it could still spend once this generation is
+        out, together with the exposure it already holds.
 
-        A gateway that receives its replacement spends the new ceiling. A
-        gateway that does not receive it keeps spending the old one until the
-        term expires. The allocator cannot distinguish the two cases, so it
-        budgets for the larger of them at every gateway with an unexpired
-        lease.
+        A holder that receives its new lease spends the new ceiling; one that
+        does not keeps the old until the term ends; and neither case makes its
+        existing positions disappear.
         """
-        live = dict(new_ceilings)
-        for g, (expiry, r_ceil, _gr) in self.outstanding.get(account, {}).items():
-            if expiry > now:
-                live[g] = max(live.get(g, 0), r_ceil)
-        return live
+        auth = self._auth(account)
+        comm = self._comm(account)
+        risk_total = gross_total = 0
+        for h in set(auth) | set(comm) | set(ceilings):
+            new_r = ceilings.get(h, 0)
+            new_g = new_r * self.gross_per_risk
+            live_r = live_g = 0
+            rec = auth.get(h)
+            if rec and rec[0] > now:
+                live_r, live_g = rec[1], rec[2]
+            cr, cg = comm.get(h, (0, 0))
+            risk_total += max(new_r, live_r, cr)
+            gross_total += max(new_g, live_g, cg)
+        return risk_total, gross_total
 
-    def _feasible(self, account, scale, weights, floors, collateral, now,
-                  gross_floors=None):
-        ceilings = self._ceilings(scale, weights, floors, gross_floors)
-        live = self._live_after(account, ceilings, now)
-        risk_total = sum(live.values())
-        gross_total = risk_total * self.gross_per_risk
+    def _feasible(self, account, scale, weights, collateral, now):
+        ceilings = self._ceilings(account, scale, weights)
+        risk_total, gross_total = self._bounds(account, ceilings, now)
         den = self.risk.A_den()
-        lhs = (2 * risk_total + self.residual) * den + self.risk.A_num(gross_total)
+        lhs = ((2 * risk_total + self.residual) * den
+               + self.risk.A_num(gross_total))
         return lhs <= collateral * den
 
-    def solve_scale(self, account, collateral, weights, floors, now,
-                    gross_floors=None):
-        if not self._feasible(account, 0, weights, floors, collateral, now,
-                              gross_floors):
-            return None                 # not even the floors fit: reduce-only
+    def solve_scale(self, account, collateral, weights, now):
+        if not self._feasible(account, 0, weights, collateral, now):
+            return None
         hi, step = 0, max(1, collateral)
-        while self._feasible(account, hi + step, weights, floors, collateral,
-                             now, gross_floors):
+        while self._feasible(account, hi + step, weights, collateral, now):
             hi += step
         lo, hi = hi, hi + step
         while lo + 1 < hi:
             mid = (lo + hi) // 2
-            if self._feasible(account, mid, weights, floors, collateral, now,
-                              gross_floors):
+            if self._feasible(account, mid, weights, collateral, now):
                 lo = mid
             else:
                 hi = mid
@@ -156,52 +195,57 @@ class Allocator:
 
     # ---- issuance ---------------------------------------------------------
 
-    def issue(self, account, collateral, weights, floors=None, now=0,
-              gross_floors=None):
+    def issue(self, account, collateral, weights, floors=None,
+              gross_floors=None, now=0):
         """Issue a generation of leases.
 
-        `floors` maps gateway -> the requirement its admitted set already
-        occupies. A ceiling is never issued below the floor.
+        `floors` and `gross_floors` report what each holder's admitted set
+        occupies; they fold into the persistent committed exposure.
 
-        Returns (leases, scale). `scale` is None when the account cannot be
-        given new capacity at all, in which case every ceiling equals the
-        floor and the account is effectively reduce-only.
+        When the solve is infeasible the leases are issued in quarantine mode
+        and a quarantined gateway admits nothing. Local risk reduction is not a
+        safe fallback: an order that lowers one gateway's requirement can raise
+        the account's, by removing a hedge held on another gateway. Reducing
+        risk from that state needs a check against the whole account, which a
+        gateway cannot perform on its own.
         """
-        floors = floors or {}
+        if floors or gross_floors:
+            f = floors or {}
+            gf = gross_floors or {}
+            self.observe_usage(account, {
+                g: (f.get(g, 0), gf.get(g, 0)) for g in set(f) | set(gf)
+            })
+
         gen = self.generation.get(account, 0) + 1
         self.generation[account] = gen
 
-        gross_floors = gross_floors or {}
-        scale = self.solve_scale(account, collateral, weights, floors, now,
-                                 gross_floors)
-        base = self._ceilings(0 if scale is None else scale, weights, floors,
-                              gross_floors)
+        scale = self.solve_scale(account, collateral, weights, now)
+        mode = "quarantine" if scale is None else "normal"
+        base = self._ceilings(account, 0 if scale is None else scale, weights)
 
         out = {}
+        denom = self.shape[0] or 1
+        comm = self._comm(account)
         for g in weights:
-            top = base[g]
-            denom = self.shape[0] or 1
-            risk_curve = tuple((top * self.shape[k]) // denom
+            h = _key(g)
+            top = base[h]
+            floor_r = comm.get(h, (0, 0))[0]
+            risk_curve = tuple(max((top * self.shape[k]) // denom, floor_r)
                                for k in range(len(self.shape)))
-            # a ceiling never drops below the floor, at any state
-            risk_curve = tuple(max(v, floors.get(g, 0)) for v in risk_curve)
             gross_curve = tuple(r * self.gross_per_risk for r in risk_curve)
-            out[g] = Lease(account, self.epoch, gen, g, now + self.ttl,
-                           risk_curve, gross_curve)
+            out[g] = Lease(account, self.epoch, gen, h[0], h[1],
+                           now + self.ttl, mode, risk_curve, gross_curve)
 
-        # A gateway that never received an earlier replacement is still
-        # holding whichever lease did reach it, so the record kept here is the
-        # largest live ceiling rather than the most recent one. Overwriting
-        # with the latest loses the older, possibly larger, live lease.
-        book = self.outstanding.setdefault(account, {})
+        auth = self._auth(account)
         for g, lz in out.items():
-            prev = book.get(g)
+            h = _key(g)
+            prev = auth.get(h)
             if prev and prev[0] > now:
-                book[g] = (max(prev[0], lz.expiry),
+                auth[h] = (max(prev[0], lz.expiry),
                            max(prev[1], lz.risk_amount),
                            max(prev[2], lz.gross_amount))
             else:
-                book[g] = (lz.expiry, lz.risk_amount, lz.gross_amount)
+                auth[h] = (lz.expiry, lz.risk_amount, lz.gross_amount)
 
         self.issued[(account, self.epoch, gen)] = {
             g: lz.risk_amount for g, lz in out.items()
