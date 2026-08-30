@@ -1,10 +1,10 @@
 {
-  "admitted": 34480,
-  "refused": 1463,
-  "filled": 18958,
-  "cancel_requested": 7544,
-  "cancel_acked": 7570,
+  "admitted": 35228,
+  "refused": 713,
+  "filled": 18921,
+  "cancel_requested": 7593,
+  "cancel_acked": 7588,
   "released": 63,
   "release_refused": 0,
-  "reissued": 8028
+  "reissued": 8011
 }

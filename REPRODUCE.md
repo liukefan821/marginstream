@@ -535,9 +535,14 @@ of them. Sealed figures are now summed per holder.
 
     $ python3 experiments/e1_worst_fill_safety.py
     trials: 400, steps per trial: 200
-    actions: admitted=34480, refused=1463, filled=18958, cancel_requested=7544,
-      cancel_acked=7570, released=63, release_refused=0, reissued=8028
+    actions: admitted=35228, refused=713, filled=18921, cancel_requested=7593,
+      cancel_acked=7588, released=63, release_refused=0, reissued=8011
     no state reached a requirement above equity
+
+  The oracle takes both terms of the requirement over the worst fill subset. An
+  earlier version took the add-on from the filled position alone, which
+  understates it whenever an unfilled order can raise the gross notional the
+  account reaches, and would have made a clean run a false negative.
 
     $ python3 experiments/e2_naive_netting_negative.py
             mode   ceiling  admitted  requirement  collateral  shortfall
@@ -546,23 +551,32 @@ of them. Sealed figures are now summed per holder.
 
     $ python3 experiments/e3_hot_path_benchmark.py
     python 3.12.3 on Linux x86_64; 4000 repetitions per figure
-     grid  orders             mode  admit p50  admit p95  fill p50  cancel p50
-        7      50      incremental     4055.0      22552    3657.0      1364.5
-        7      50   full recompute   119728.5     213156    3537.0      1266.0
-        7     500      incremental     3866.0       5551    3702.5      1301.0
-        7     500   full recompute   144458.0     243663    3661.0      1298.5
-       16      50      incremental     5659.0      28329    6524.0      1763.0
-       16      50   full recompute   120396.0     232955    6723.0      1852.0
-       16     500      incremental     5768.0       7810    6734.0      1741.0
-       16     500   full recompute   154866.0     250187    6314.0      1723.5
+     grid  orders          mode  admit p50  admit p95
+        7      50   incremental     4865.0      10977
+        7      50     full scan    59143.0     106103
+        7     500   incremental     4698.0       6015
+        7     500     full scan   464749.5     671080
+       16      50   incremental     6343.0       9322
+       16      50     full scan   119582.5     149858
+       16     500   incremental     6667.0       9564
+       16     500     full scan   995371.0    1054377
     figures in nanoseconds
 
-Reading E3: incremental admission does not grow with the number of live orders
-(3,866 ns at 500 orders against 4,055 ns at 50), while full recompute does
-(119,728 to 144,458 ns at the same widths). That is the shape the design
-claims. The absolute figures are CPython on a shared machine and are three
-orders of magnitude away from what §1.7 assumes for a compiled implementation;
-they support the scaling argument and not the latency target.
+Reading E3: both modes compute the same envelopes and were checked to agree on
+400 random books before being timed, so the comparison is of cost. Incremental
+admission does not move with the number of live orders (4,698 ns at 500 orders
+against 4,865 at 50) and grows by a factor of 1.36 when the grid widens by 2.3.
+The full scan grows by 7.9 when the order count grows by 10, and by 2.0 when
+the grid widens by 2.3. That is O(|S|) against O(orders x |S|), shown by the
+scaling rather than by a single ratio.
+
+The book is held at a fixed size during measurement: the order admitted in each
+repetition is removed outside the timed window. An earlier version let the book
+grow while it was being timed, which made the order-count column meaningless.
+
+The absolute figures are CPython on a shared machine and are three orders of
+magnitude away from what section 1.7 assumes for a compiled implementation.
+They support the scaling argument, not the latency target.
 
 E2 is the control that makes E1's clean run mean something: with netting
 instead of worst-fill, the same script admits 402 orders against a ceiling of

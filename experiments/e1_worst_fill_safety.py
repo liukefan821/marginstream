@@ -33,10 +33,30 @@ def account_state(gws):
     return filled, orders
 
 
+def worst_gross(risk, filled, orders):
+    buy, sell = {}, {}
+    for sym, rem in orders:
+        if rem > 0:
+            buy[sym] = buy.get(sym, 0) + rem
+        else:
+            sell[sym] = sell.get(sym, 0) - rem
+    total = 0
+    for sym in set(filled) | set(buy) | set(sell):
+        mark = risk.symbols[sym].mark
+        f = filled.get(sym, 0)
+        total += mark * max(abs(f + buy.get(sym, 0)),
+                            abs(f - sell.get(sym, 0)))
+    return total
+
+
 def worst_gaps(risk, filled, orders, collateral):
     """Requirement under the worst fill subset, against equity at each
-    scenario. Equity uses the filled position, since an unfilled order has not
-    moved money."""
+    scenario.
+
+    Both terms of the requirement use the worst subset. Taking the add-on from
+    the filled position alone understates it, because unfilled orders can still
+    raise the gross notional the account reaches.
+    """
     worst = None
     for f in risk.grid:
         v = risk.loss_num(filled, f)
@@ -47,7 +67,7 @@ def worst_gaps(risk, filled, orders, collateral):
         if worst is None or v > worst:
             worst = v
     r = 0 if worst is None or worst <= 0 else risk.ceil_div(worst, risk.DEN)
-    m = r + risk.A(filled)
+    m = r + risk.A_of_gross(worst_gross(risk, filled, orders))
     return [m - (collateral - risk.loss(filled, f)) for f in risk.grid]
 
 
@@ -57,8 +77,8 @@ def one_trial(seed, counts):
     syms = [Symbol(f"S{i}", 0, rng.randrange(500, 3000),
                    rng.randrange(20, 200), rng.randrange(30, 160))
             for i in range(n_sym)]
-    risk = RiskModel(syms, addon_kappa=rng.randrange(0, 2),
-                     addon_scale=10 ** 6)
+    risk = RiskModel(syms, addon_kappa=rng.randrange(1, 3),
+                     addon_scale=10 ** 7)
     collateral = rng.randrange(50_000, 2_000_000)
 
     seqr = Sequencer()

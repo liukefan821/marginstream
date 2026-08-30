@@ -49,7 +49,8 @@ class _AccountState:
 
 class Gateway:
     def __init__(self, gateway_id, risk, fencing=True, ratchet=False,
-                 incarnation=0, sequencer=None, worst_fill=True):
+                 incarnation=0, sequencer=None, worst_fill=True,
+                 incremental=True):
         self.id = gateway_id
         self.incarnation = incarnation
         self.risk = risk
@@ -59,6 +60,10 @@ class Gateway:
         # when false the gateway nets orders into a position, which is the
         # behaviour the negative experiment uses
         self.worst_fill = worst_fill
+        # when false the same envelopes are recomputed from the whole order set
+        # on every call. the answer is identical; only the cost differs, which
+        # is what makes it a fair performance baseline.
+        self.incremental = incremental
         self.grid = risk.grid
         self.n_scen = len(risk.grid)
         self.state = {}
@@ -85,6 +90,44 @@ class Gateway:
 
     def _order_vector(self, symbol, qty):
         return [self.risk.leg_num(symbol, qty, f) for f in self.grid]
+
+    def _risk_wf_fullscan(self, st, extra_sym=None, extra_qty=0):
+        worst = None
+        for f in self.grid:
+            v = self.risk.loss_num(st.filled, f)
+            for _oid, (sym, rem, _v) in st.orders.items():
+                leg = self.risk.leg_num(sym, rem, f)
+                if leg > 0:
+                    v += leg
+            if extra_sym is not None:
+                leg = self.risk.leg_num(extra_sym, extra_qty, f)
+                if leg > 0:
+                    v += leg
+            if worst is None or v > worst:
+                worst = v
+        if worst is None or worst <= 0:
+            return 0
+        return self.risk.ceil_div(worst, self.risk.DEN)
+
+    def _gross_wf_fullscan(self, st, extra_sym=None, extra_qty=0):
+        buy, sell = {}, {}
+        for _oid, (sym, rem, _v) in st.orders.items():
+            if rem > 0:
+                buy[sym] = buy.get(sym, 0) + rem
+            else:
+                sell[sym] = sell.get(sym, 0) - rem
+        if extra_sym is not None:
+            if extra_qty > 0:
+                buy[extra_sym] = buy.get(extra_sym, 0) + extra_qty
+            else:
+                sell[extra_sym] = sell.get(extra_sym, 0) - extra_qty
+        total = 0
+        for sym in set(st.filled) | set(buy) | set(sell):
+            mark = self.risk.symbols[sym].mark
+            f = st.filled.get(sym, 0)
+            total += mark * max(abs(f + buy.get(sym, 0)),
+                                abs(f - sell.get(sym, 0)))
+        return total
 
     def _risk_wf(self, st, extra_vec=None):
         worst = None
@@ -143,7 +186,10 @@ class Gateway:
         st = self._st(account)
         vec = self._order_vector(symbol, qty)
 
-        if self.worst_fill:
+        if self.worst_fill and not self.incremental:
+            risk_after = self._risk_wf_fullscan(st, symbol, qty)
+            gross_after = self._gross_wf_fullscan(st, symbol, qty)
+        elif self.worst_fill:
             risk_after = self._risk_wf(st, vec)
             before_sym = self._symbol_gross(st, symbol)
             if qty > 0:

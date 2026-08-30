@@ -1,8 +1,11 @@
 """E3: cost of the admission path.
 
-Measures admission, partial fill and cancel acknowledgement at two scenario
-grid widths, and compares the incremental gateway against one that recomputes
-the envelopes from the full order set on every call.
+Measures admission at two scenario grid widths, comparing two implementations
+of the *same* envelopes: one that maintains running totals and one that
+recomputes them from the whole order set on every call. Both compute worst-fill
+risk and worst-fill gross and return the same answers, so the comparison is of
+cost and not of semantics. The netting gateway that E2 uses is deliberately a
+different and unsafe calculation and does not appear here.
 
 Wall-clock timings on a shared machine are noisy, so the run reports both the
 median and the 95th percentile over many repetitions, and states the
@@ -34,21 +37,26 @@ def build(grid, n_sym=8):
     return syms, RiskModel(syms, addon_kappa=0, addon_scale=1, grid=grid)
 
 
-def timed(fn, reps):
+def timed(fn, reps, teardown=None):
+    """Time `fn` only. `teardown` runs outside the measured window, so a
+    benchmark can keep the book at a fixed size instead of letting it grow
+    while it is being measured."""
     samples = []
     for _ in range(reps):
         t0 = time.perf_counter_ns()
         fn()
         samples.append(time.perf_counter_ns() - t0)
+        if teardown is not None:
+            teardown()
     samples.sort()
     return (statistics.median(samples),
             samples[int(0.95 * (len(samples) - 1))])
 
 
-def bench(grid_name, grid, worst_fill, open_orders):
+def bench(grid_name, grid, incremental, open_orders):
     syms, risk = build(grid)
     alloc = Allocator(risk, ttl=10 ** 9, gross_per_risk=10 ** 6)
-    gw = Gateway(0, risk, worst_fill=worst_fill)
+    gw = Gateway(0, risk, worst_fill=True, incremental=incremental)
     leases, _ = alloc.issue(ACC, 10 ** 12, {0: 1}, now=0)
     gw.install_lease(leases[0])
     gen = alloc.current_generation(ACC)
@@ -65,33 +73,39 @@ def bench(grid_name, grid, worst_fill, open_orders):
         gw.admit(ACC, syms[counter[0] % len(syms)].name, 1, gen,
                  order_id=f"m{counter[0]}")
 
-    adm = timed(admit_once, REPS)
+    def undo_admit():
+        gw.cancel_ack(ACC, f"m{counter[0]}")
 
-    fill_ids = [f"m{i}" for i in range(1, REPS + 1)]
+    # the order just admitted is removed outside the measured window, so every
+    # repetition sees a book of the same size
+    adm = timed(admit_once, REPS, teardown=undo_admit)
+
     fi = [0]
 
     def fill_once():
-        gw.fill(ACC, fill_ids[fi[0]], 1)
+        gw.fill(ACC, f"pre{fi[0]}", 1 if fi[0] % 2 else -1)
+
+    def undo_fill():
         fi[0] += 1
 
-    fill = timed(fill_once, min(REPS, len(fill_ids)))
+    fill = timed(fill_once, min(REPS, max(1, open_orders)), teardown=undo_fill)
 
-    for i in range(open_orders):
-        pass
     ci = [0]
-    cancel_ids = [f"pre{i}" for i in range(open_orders)]
 
     def cancel_once():
-        if ci[0] < len(cancel_ids):
-            gw.cancel_ack(ACC, cancel_ids[ci[0]])
-            ci[0] += 1
+        if ci[0] < open_orders:
+            gw.cancel_ack(ACC, f"pre{ci[0]}")
 
-    cancel = timed(cancel_once, min(REPS, max(1, open_orders)))
+    def undo_cancel():
+        ci[0] += 1
+
+    cancel = timed(cancel_once, min(REPS, max(1, open_orders)),
+                   teardown=undo_cancel)
 
     return {
         "grid": grid_name,
         "scenarios": len(grid),
-        "mode": "incremental" if worst_fill else "full recompute",
+        "mode": "incremental" if incremental else "full scan",
         "open_orders": open_orders,
         "admit_p50_ns": adm[0], "admit_p95_ns": adm[1],
         "fill_p50_ns": fill[0], "fill_p95_ns": fill[1],
@@ -105,17 +119,17 @@ def main():
     rows = []
     for grid_name, grid in (("7", GRID_7), ("16", GRID_16)):
         for open_orders in (50, 500):
-            for worst_fill in (True, False):
-                rows.append(bench(grid_name, grid, worst_fill, open_orders))
+            for incremental in (True, False):
+                rows.append(bench(grid_name, grid, incremental, open_orders))
 
-    hdr = (f"{'grid':>5} {'orders':>7} {'mode':>16} {'admit p50':>10} "
-           f"{'admit p95':>10} {'fill p50':>9} {'cancel p50':>11}")
+    hdr = (f"{'grid':>5} {'orders':>7} {'mode':>13} {'admit p50':>10} "
+           f"{'admit p95':>10}")
     print(hdr)
     for r in rows:
-        print(f"{r['scenarios']:>5} {r['open_orders']:>7} {r['mode']:>16} "
-              f"{r['admit_p50_ns']:>10} {r['admit_p95_ns']:>10} "
-              f"{r['fill_p50_ns']:>9} {r['cancel_p50_ns']:>11}")
-    print("\nfigures in nanoseconds")
+        print(f"{r['scenarios']:>5} {r['open_orders']:>7} {r['mode']:>13} "
+              f"{r['admit_p50_ns']:>10} {r['admit_p95_ns']:>10}")
+    print("\nfigures in nanoseconds. fill and cancel are the same code in "
+          "both modes and are recorded in the json rather than compared here.")
     os.makedirs("results", exist_ok=True)
     with open("results/e3_hot_path.json", "w") as f:
         json.dump(rows, f, indent=2)
