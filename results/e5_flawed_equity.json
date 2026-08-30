@@ -1,0 +1,64 @@
+{
+  "scripted": [
+    {
+      "mode": "exact",
+      "fee": 8000,
+      "reported_equity": 42000,
+      "actual_equity": 42000,
+      "ceiling": 21000,
+      "admitted": 105,
+      "requirement": 21000,
+      "worst_equity": 42000,
+      "shortfall": 0
+    },
+    {
+      "mode": "ignores_realised",
+      "fee": 8000,
+      "reported_equity": 92000,
+      "actual_equity": 42000,
+      "ceiling": 46000,
+      "admitted": 230,
+      "requirement": 46000,
+      "worst_equity": 42000,
+      "shortfall": 4000
+    },
+    {
+      "mode": "ignores_fees",
+      "fee": 8000,
+      "reported_equity": 50000,
+      "actual_equity": 42000,
+      "ceiling": 25000,
+      "admitted": 125,
+      "requirement": 25000,
+      "worst_equity": 42000,
+      "shortfall": 0
+    }
+  ],
+  "sweep": [
+    {
+      "mode": "exact",
+      "trials": 120,
+      "trials_with_a_breach": 0,
+      "violations": 0,
+      "max_overstatement": 0,
+      "min_equity": 205903
+    },
+    {
+      "mode": "ignores_realised",
+      "trials": 120,
+      "trials_with_a_breach": 0,
+      "violations": 0,
+      "max_overstatement": 3139,
+      "min_equity": 205903
+    },
+    {
+      "mode": "ignores_fees",
+      "trials": 120,
+      "trials_with_a_breach": 0,
+      "violations": 0,
+      "max_overstatement": 45,
+      "min_equity": 205903
+    }
+  ],
+  "fee_threshold": 32000
+}

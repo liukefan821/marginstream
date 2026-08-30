@@ -678,3 +678,105 @@ state was in fact equal. Tallies are now dropped when they reach zero.
 - The allocator's own snapshot and failover. This round covers the gateway.
 - Section 6.1's blast-radius claim still needs replacing with an admission that
   the gateway is inside the trusted computing base.
+
+## Account equity round (2026-08-31)
+
+### Connecting the ledger to the scenario model
+
+The grid is a set of price displacements, not a set of settlement prices:
+`leg_num(s, q, f) = -q * beta_s * f * scan_s`, so scenario `f` moves symbol `s`
+by `dp_s(f) = beta_s * f * scan_s / DEN` and `loss(P, f) = -sum_s q_s dp_s(f)`.
+Therefore
+
+    E0    = collateral + sum_s ( cash_s + q_s * mark_s ) - fees
+    E(f)  = collateral + sum_s ( cash_s + q_s * (mark_s + dp_s(f)) ) - fees
+          = E0 - loss(P, f)
+
+which is the form the oracle already used, with `E0` where `collateral` stood.
+The safety condition carries over unchanged: the requirement is bounded by the
+sum of the ceilings, the loss at any scenario is bounded by the same sum
+because `R` is a maximum over a set containing that scenario, so
+
+    2 * sum_h risk_h + A(sum_h gross_h) <= E0
+
+is still sufficient. `loss` rounds a loss up, so scenario equity is understated
+rather than overstated.
+
+### Two ledgers, one of which decides
+
+The safety path uses an exact cash-flow identity with no division in it:
+`cash -= dq * p` and `q += dq` per fill, and `total_pnl(marks) = sum_s (cash_s +
+q_s * mark_s)`. That covers opening, adding, partial and full closes and a fill
+that crosses through zero, with no average cost and no rounding decision.
+
+A first-in first-out lot list produces the realised and unrealised split a
+statement needs. It is required to satisfy `realised + unrealised(marks) ==
+cash + q * mark`, which is checked over 500 random fill sequences and on a
+sequence of primes where any division would leave a remainder. Fees accumulate
+separately and are subtracted once.
+
+    $ python3 tests/test_account.py
+    13 of 13 properties hold
+
+### E1 against real equity
+
+    $ python3 experiments/e1_equity_safety.py
+    trials: 300, steps per trial: 160
+    actions: admitted=4296, refused=15807, fills=4612, cancels=1842, reissues=7656
+    account: realised=119995, unrealised=-40927, fees=3366
+    max requirement 41427, min equity 203714, min headroom 201427,
+      peak requirement as a share of equity 5%, violations 0
+    no state reached a requirement above equity
+
+The constraint is active: 15,807 admissions were refused against 4,296
+accepted. The peak requirement is nevertheless a small share of equity, which
+is structural rather than accidental. The factor of two caps utilisation at
+about half of equity before the add-on reserve is taken, so the requirement
+cannot approach equity by construction. That is a cost of the closure and it is
+quantified in E5 rather than left as an impression.
+
+### E5, an account that misreports equity
+
+    $ python3 experiments/e5_flawed_equity_negative.py
+
+    Part A - scripted
+                    mode   reported     actual   ceiling  admitted  requirement  worst equity  shortfall
+                   exact      42000      42000     21000       105        21000         42000          0
+        ignores_realised      92000      42000     46000       230        46000         42000       4000
+            ignores_fees      50000      42000     25000       125        25000         42000          0
+
+    Part B - how large an overstatement has to be before it bites
+        fee hidden   reported     actual  requirement  worst equity  shortfall
+              8000      50000      42000        25000         42000          0
+             16000      50000      34000        25000         34000          0
+             24000      50000      26000        25000         26000          0
+             32000      50000      18000        25000         18000       7000
+             40000      50000      10000        25000         10000      15000
+             48000      50000       2000        25000          2000      23000
+             56000      50000      -6000        25000         -6000      31000
+
+    Part C - the random run of E1 with each account feeding issuance
+                    mode  trials  trials with a breach  largest overstatement  smallest equity
+                   exact     120                     0                      0           205903
+        ignores_realised     120                     0                   3139           205903
+            ignores_fees     120                     0                     45           205903
+
+An account that forgets a realised loss reports 92,000 where it has 42,000, is
+issued a ceiling of 46,000 instead of 21,000, admits 230 orders instead of 105,
+and ends above equity by 4,000. That is the control that makes E1's clean run
+mean something.
+
+Part B measures the tolerance rather than assuming one: the closure absorbs an
+overstatement until it reaches 32,000 of a reported 50,000, which is where the
+ceiling it buys exceeds what equity can carry. Part C shows that the random
+configuration never produces an overstatement near that size, so it does not
+breach; that is a measurement of the margin, not evidence that a misreported
+account is safe.
+
+### Still open
+
+- Liquidation latency and the operational failure experiments.
+- The allocator's own snapshot and failover; this round and the last cover the
+  gateway and the account.
+- Section 6.1's blast-radius claim still needs replacing with an admission that
+  the gateway is inside the trusted computing base.

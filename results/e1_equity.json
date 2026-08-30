@@ -1,0 +1,16 @@
+{
+  "admitted": 4296,
+  "refused": 15807,
+  "fills": 4612,
+  "cancels": 1842,
+  "reissues": 7656,
+  "violations": 0,
+  "realised": 119995,
+  "unrealised": -40927,
+  "fees": 3366,
+  "max_requirement": 41427,
+  "min_equity": 203714,
+  "min_headroom": 201427,
+  "max_utilisation_pct": 5,
+  "max_overstatement": 0
+}
