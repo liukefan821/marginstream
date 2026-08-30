@@ -41,7 +41,7 @@ def c1_charge_bounds_global_requirement():
     alloc = Allocator(risk, ttl=10)
     g0 = Gateway(0, risk)
     g1 = Gateway(1, risk)
-    leases, _ = alloc.issue(ACC, 100_000, {0: 1, 1: 1})
+    leases, _ = alloc.issue(ACC, 100_000, {0: 1, 1: 1}, now=0)
     for g, lz in leases.items():
         (g0 if g == 0 else g1).install_lease(lz)
     gen = alloc.current_generation(ACC)
@@ -78,7 +78,7 @@ def c2_charge_bounds_gross_notional():
 
     alloc = Allocator(risk, ttl=10, gross_per_risk=20)
     gw = Gateway(0, risk)
-    leases, _ = alloc.issue(ACC, 30_000, {0: 1})
+    leases, _ = alloc.issue(ACC, 30_000, {0: 1}, now=0)
     gw.install_lease(leases[0])
     gen = alloc.current_generation(ACC)
 
@@ -160,7 +160,7 @@ def c5_schedule_is_a_trigger_not_a_guarantee():
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     alloc = Allocator(risk, shape=(1000, 300), ttl=10)
     gw = Gateway(0, risk, fencing=True)
-    leases, _ = alloc.issue(ACC, 100_000, {0: 1})
+    leases, _ = alloc.issue(ACC, 100_000, {0: 1}, now=0)
     gw.install_lease(leases[0])
     gen = alloc.current_generation(ACC)
     lease = leases[0]
@@ -171,14 +171,101 @@ def c5_schedule_is_a_trigger_not_a_guarantee():
         pass
     used = gw.used_risk(ACC)
 
-    over_at_state_1 = used > lease.risk_at(1)
-    refused, reason = gw.admit(ACC, "A", 1, gen, market_state=1)
+    # the market state moves and no order arrives
+    verdict = gw.observe_market_state(ACC, 1)
 
     return _report(
-        "c5 the gateway detects the condition locally on the tick",
-        over_at_state_1 and not refused and reason == "risk_envelope",
+        "c5 the gateway reports the condition on a state tick, with no order",
+        used > lease.risk_at(1) and verdict == "reduce_only",
         f"used {used}; state-1 envelope {lease.risk_at(1)}; "
-        f"next order refused={not refused} reason={reason}",
+        f"state tick returned {verdict}",
+    )
+
+
+
+def c6_no_capacity_reissued_over_a_live_lease():
+    """Capacity held by a gateway that has not been replaced must not be
+    issued again to anyone else before that gateway's term ends.
+
+    An old gateway is leased and spends; the allocator bumps the generation and
+    hands the same capacity to a replacement gateway while the old lease is
+    still inside its term. Both spend, and the account carries the sum.
+    """
+    syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 1, 1000, 100, 100)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    collateral = 1_000
+
+    alloc = Allocator(risk, ttl=100)
+    old = Gateway(0, risk)
+    leases, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
+    old.install_lease(leases[0])
+    gen1 = alloc.current_generation(ACC)
+    while old.admit(ACC, "A", 1, gen1, now=1)[0]:
+        pass
+
+    # the old gateway is unreachable; a replacement is brought up at t=2,
+    # well inside the old lease's term
+    alloc.bump_generation(ACC)
+    new_leases, _ = alloc.issue(ACC, collateral, {1: 1}, now=2)
+    new = Gateway(1, risk)
+    new.install_lease(new_leases[1])
+    gen2 = alloc.current_generation(ACC)
+    while new.admit(ACC, "B", 1, gen2, now=3)[0]:
+        pass
+
+    merged = {}
+    for gw in (old, new):
+        for sym, qty in gw.local_positions(ACC).items():
+            merged[sym] = merged.get(sym, 0) + qty
+
+    return _report(
+        "c6 capacity is not reissued over an unexpired lease",
+        risk.M(merged) <= collateral,
+        f"old spent {old.used_risk(ACC)}, replacement spent "
+        f"{new.used_risk(ACC)}, requirement {risk.M(merged)} against "
+        f"collateral {collateral}",
+    )
+
+
+def c7_weight_migration_respects_existing_usage():
+    """A new generation may not lower a gateway's ceiling below what its
+    admitted set already occupies, because lowering the ceiling does not
+    remove the positions.
+    """
+    syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 1, 1000, 100, 100)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    collateral = 1_000
+
+    alloc = Allocator(risk, ttl=100)
+    g0, g1 = Gateway(0, risk), Gateway(1, risk)
+    leases, _ = alloc.issue(ACC, collateral, {0: 1, 1: 1}, now=0)
+    g0.install_lease(leases[0]); g1.install_lease(leases[1])
+    gen1 = alloc.current_generation(ACC)
+    while g0.admit(ACC, "A", 1, gen1, now=1)[0]:
+        pass
+    used0 = g0.used_risk(ACC)
+
+    # the next generation moves all the weight to g1
+    alloc.bump_generation(ACC)
+    floors = {0: g0.used_risk(ACC), 1: g1.used_risk(ACC)}
+    leases2, _ = alloc.issue(ACC, collateral, {0: 0, 1: 1}, floors=floors,
+                             now=101)
+    g0.install_lease(leases2[0]); g1.install_lease(leases2[1])
+    gen2 = alloc.current_generation(ACC)
+    while g1.admit(ACC, "B", 1, gen2, now=102)[0]:
+        pass
+
+    merged = {}
+    for gw in (g0, g1):
+        for sym, qty in gw.local_positions(ACC).items():
+            merged[sym] = merged.get(sym, 0) + qty
+
+    return _report(
+        "c7 a weight change respects what a gateway already holds",
+        risk.M(merged) <= collateral,
+        f"g0 held {used0} and was re-leased "
+        f"{leases2[0].risk_amount}; requirement {risk.M(merged)} against "
+        f"collateral {collateral}",
     )
 
 
@@ -188,6 +275,8 @@ CASES = [
     c3_addon_superadditive_under_rounding,
     c4_generation_bump_revokes,
     c5_schedule_is_a_trigger_not_a_guarantee,
+    c6_no_capacity_reissued_over_a_live_lease,
+    c7_weight_migration_respects_existing_usage,
 ]
 
 

@@ -84,31 +84,71 @@ class Allocator:
         self.epoch = 0
         self.generation = {}
         self.issued = {}
+        # account -> {gateway: (expiry, risk_ceiling, gross_ceiling)}
+        # a lease stays live at its gateway until the gateway is handed a
+        # replacement or the term runs out, whichever comes first, and the
+        # allocator cannot know which happened
+        self.outstanding = {}
 
     # ---- safety condition ------------------------------------------------
 
-    def _feasible(self, scale, weights, collateral):
-        """2 * sum_g risk_g + A(sum_g gross_g) <= collateral, exactly."""
+    def _ceilings(self, scale, weights, floors, gross_floors=None):
+        """Per-gateway ceilings at market state 0, never below the floor that
+        gateway's existing admitted set already occupies. Lowering a ceiling
+        below current usage does not remove the positions, so the ceiling has
+        to accommodate them or the account has to stop taking new risk."""
+        gross_floors = gross_floors or {}
         total_w = sum(weights.values()) or 1
-        risk_total = sum(
-            (scale * w * self.shape[0]) // (total_w * DECAY_DEN)
-            for w in weights.values()
-        )
+        out = {}
+        for g, w in weights.items():
+            share = (scale * w * self.shape[0]) // (total_w * DECAY_DEN)
+            # the ceiling has to cover both resources the gateway already
+            # occupies; a gross floor is expressed in risk units through the
+            # issuance ratio
+            gfloor = gross_floors.get(g, 0)
+            need_for_gross = -(-gfloor // self.gross_per_risk) if self.gross_per_risk else 0
+            out[g] = max(share, floors.get(g, 0), need_for_gross)
+        return out
+
+    def _live_after(self, account, new_ceilings, now):
+        """What can be spent once the new leases are out.
+
+        A gateway that receives its replacement spends the new ceiling. A
+        gateway that does not receive it keeps spending the old one until the
+        term expires. The allocator cannot distinguish the two cases, so it
+        budgets for the larger of them at every gateway with an unexpired
+        lease.
+        """
+        live = dict(new_ceilings)
+        for g, (expiry, r_ceil, _gr) in self.outstanding.get(account, {}).items():
+            if expiry > now:
+                live[g] = max(live.get(g, 0), r_ceil)
+        return live
+
+    def _feasible(self, account, scale, weights, floors, collateral, now,
+                  gross_floors=None):
+        ceilings = self._ceilings(scale, weights, floors, gross_floors)
+        live = self._live_after(account, ceilings, now)
+        risk_total = sum(live.values())
         gross_total = risk_total * self.gross_per_risk
         den = self.risk.A_den()
         lhs = (2 * risk_total + self.residual) * den + self.risk.A_num(gross_total)
         return lhs <= collateral * den
 
-    def solve_scale(self, collateral, weights):
-        if not self._feasible(0, weights, collateral):
-            return 0
+    def solve_scale(self, account, collateral, weights, floors, now,
+                    gross_floors=None):
+        if not self._feasible(account, 0, weights, floors, collateral, now,
+                              gross_floors):
+            return None                 # not even the floors fit: reduce-only
         hi, step = 0, max(1, collateral)
-        while self._feasible(hi + step, weights, collateral):
+        while self._feasible(account, hi + step, weights, floors, collateral,
+                             now, gross_floors):
             hi += step
         lo, hi = hi, hi + step
         while lo + 1 < hi:
             mid = (lo + hi) // 2
-            if self._feasible(mid, weights, collateral):
+            if self._feasible(account, mid, weights, floors, collateral, now,
+                              gross_floors):
                 lo = mid
             else:
                 hi = mid
@@ -116,21 +156,52 @@ class Allocator:
 
     # ---- issuance ---------------------------------------------------------
 
-    def issue(self, account, collateral, weights, now=0):
+    def issue(self, account, collateral, weights, floors=None, now=0,
+              gross_floors=None):
+        """Issue a generation of leases.
+
+        `floors` maps gateway -> the requirement its admitted set already
+        occupies. A ceiling is never issued below the floor.
+
+        Returns (leases, scale). `scale` is None when the account cannot be
+        given new capacity at all, in which case every ceiling equals the
+        floor and the account is effectively reduce-only.
+        """
+        floors = floors or {}
         gen = self.generation.get(account, 0) + 1
         self.generation[account] = gen
-        scale = self.solve_scale(collateral, weights)
-        total_w = sum(weights.values()) or 1
+
+        gross_floors = gross_floors or {}
+        scale = self.solve_scale(account, collateral, weights, floors, now,
+                                 gross_floors)
+        base = self._ceilings(0 if scale is None else scale, weights, floors,
+                              gross_floors)
 
         out = {}
-        for g, w in weights.items():
-            risk_curve = tuple(
-                (scale * w * self.shape[k]) // (total_w * DECAY_DEN)
-                for k in range(len(self.shape))
-            )
+        for g in weights:
+            top = base[g]
+            denom = self.shape[0] or 1
+            risk_curve = tuple((top * self.shape[k]) // denom
+                               for k in range(len(self.shape)))
+            # a ceiling never drops below the floor, at any state
+            risk_curve = tuple(max(v, floors.get(g, 0)) for v in risk_curve)
             gross_curve = tuple(r * self.gross_per_risk for r in risk_curve)
             out[g] = Lease(account, self.epoch, gen, g, now + self.ttl,
                            risk_curve, gross_curve)
+
+        # A gateway that never received an earlier replacement is still
+        # holding whichever lease did reach it, so the record kept here is the
+        # largest live ceiling rather than the most recent one. Overwriting
+        # with the latest loses the older, possibly larger, live lease.
+        book = self.outstanding.setdefault(account, {})
+        for g, lz in out.items():
+            prev = book.get(g)
+            if prev and prev[0] > now:
+                book[g] = (max(prev[0], lz.expiry),
+                           max(prev[1], lz.risk_amount),
+                           max(prev[2], lz.gross_amount))
+            else:
+                book[g] = (lz.expiry, lz.risk_amount, lz.gross_amount)
 
         self.issued[(account, self.epoch, gen)] = {
             g: lz.risk_amount for g, lz in out.items()

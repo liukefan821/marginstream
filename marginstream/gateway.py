@@ -88,6 +88,31 @@ class Gateway:
         pos[symbol] = pos.get(symbol, 0) + qty
         return True, "ok"
 
+    def observe_market_state(self, account, state, now=0):
+        """Evaluate the account against the current market state without an
+        order being present.
+
+        Returns one of: no_lease, lease_expired, within_envelope, reduce_only.
+        A market-state tick calls this for every account the gateway holds, so
+        the condition is reported when the state moves rather than when the
+        next order happens to arrive.
+        """
+        lease = self.lease.get(account)
+        if lease is None:
+            return "no_lease"
+        if now >= lease.expiry:
+            return "lease_expired"
+
+        if self.ratchet:
+            state = max(self.worst_state.get(account, 0), state)
+            self.worst_state[account] = state
+
+        pos = self.local_positions(account)
+        if (self.risk.R(pos) > lease.risk_at(state)
+                or self.risk.gross(pos) > lease.gross_at(state)):
+            return "reduce_only"
+        return "within_envelope"
+
     # ---- reporting ------------------------------------------------------
 
     def used_risk(self, account):

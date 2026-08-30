@@ -156,3 +156,66 @@ capacity lever, and c5 tests the trigger rather than a guarantee.
 gateway interfaces and have not been re-run against the revised mechanism.
 Their recorded output above describes the implementation as it was before this
 revision.
+
+## Second review round (2026-08-30)
+
+The same reviewer attacked the revised interfaces and found two further
+counterexamples, both reproduced before any change:
+
+- **c6, capacity reissued over a live lease.** A term bounds how long a
+  partitioned gateway keeps serving; it does not entitle the allocator to hand
+  that capacity to anyone else meanwhile. The allocator now tracks outstanding
+  leases per gateway and budgets, at every gateway with an unexpired lease, for
+  the larger of the old and new ceilings. A replacement brought up inside the
+  old term receives nothing until the term ends.
+- **c7, weight migration below existing usage.** Lowering a gateway's ceiling
+  does not remove the positions it already admitted, so a ceiling is floored at
+  what that gateway occupies, in both resources. When the floors alone do not
+  fit the global condition the account receives ceilings equal to its floors,
+  which is reduce-only.
+
+Two further corrections came out of the same round:
+
+- `c5` now calls `Gateway.observe_market_state`, so it tests that the condition
+  is reported on a market-state tick with no order present, rather than that
+  the next order to arrive is refused.
+- The fuzz was a single-issuance check against collateral. It is replaced by
+  `tests/test_lifecycle_fuzz.py`, which runs several generations per trial with
+  lease delivery loss, weight changes, gateway replacement and clock advance
+  past lease terms, and whose oracle compares the requirement against equity at
+  every scenario in the grid rather than against collateral.
+
+The upgraded fuzz found three breaches in 300 trials on the first run. The
+cause was that the allocator overwrote its record of an outstanding lease at
+each issuance, so a gateway still holding an older and larger lease stopped
+being counted; and that the ceiling floors covered the risk resource only, not
+gross notional. Both are fixed.
+
+    $ python3 tests/test_counterexamples.py
+    7 of 7 properties hold
+
+    $ python3 tests/test_lifecycle_fuzz.py
+    trials: 300, generations per trial: 6, admissions: 7498
+    oracle: M(P) <= collateral - loss(P, k) for every k in the grid
+    no trial exceeded equity at any scenario
+
+    extended run: trials 1500, admissions 35642, breaches 0
+
+Still open, and not claimed closed:
+
+- A gateway tracks the orders it admitted, not the positions that filled. Two
+  resting orders that net to zero are treated as zero risk; if only one fills
+  the account carries the other side. The envelope has to be taken over the
+  worst fill subset, which for a scenario-linear loss is the sum of positive
+  parts per scenario.
+- A gateway is now a stateful authority. Its crash, rebuild, replication and
+  failover are not designed.
+- If matching does not re-check the lease, a fully compromised gateway can
+  ignore it. Section 6.1 claims the blast radius is bounded by the lease; that
+  claim has to be replaced with an admission that the gateway is inside the
+  trusted computing base.
+- The schedule provides no capacity benefit under the corrected condition: a
+  flat lease at the level solved for is equally safe and admits at least as
+  many orders. Its remaining value is stress tightening, the local trigger, and
+  whatever it saves in tail exposure and forced reduction, none of which is yet
+  measured. Accepted-order count is not the metric for it.
