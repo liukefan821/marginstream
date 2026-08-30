@@ -409,6 +409,100 @@ def c10_incarnations_are_counted_separately():
     )
 
 
+
+def c11_expired_but_unreconciled_holds_its_ceiling():
+    """A term that ends without a terminal usage report leaves the allocator
+    unable to say what the holder spent. It must assume the ceiling.
+
+    Unlike c8, no usage report reaches the allocator here.
+    """
+    syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 1, 1000, 100, 100)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    collateral = 1_000
+
+    alloc = Allocator(risk, ttl=100)
+    old = Gateway(0, risk)
+    leases, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
+    old.install_lease(leases[0])
+    gen1 = alloc.current_generation(ACC)
+    while old.admit(ACC, "A", 1, gen1, now=1)[0]:
+        pass
+
+    # the term ends and nothing is heard from the old holder
+    alloc.bump_generation(ACC)
+    new_leases, scale = alloc.issue(ACC, collateral, {1: 1}, now=101)
+    new = Gateway(1, risk)
+    new.install_lease(new_leases[1])
+    gen2 = alloc.current_generation(ACC)
+    while new.admit(ACC, "B", 1, gen2, now=102)[0]:
+        pass
+
+    pos = merge([old, new])
+    return _report(
+        "c11 an expired, unreconciled term keeps occupying its ceiling",
+        worst_breach(risk, pos, collateral) == 0,
+        f"replacement granted {new_leases[1].risk_amount} (scale={scale}); "
+        f"requirement exceeds equity by "
+        f"{worst_breach(risk, pos, collateral)}",
+    )
+
+
+def c12_stale_reconciliation_does_not_lower_exposure():
+    """A reconciliation carrying an older watermark than one already applied
+    must not reduce what the allocator believes is committed."""
+    syms = [Symbol("A", 0, 1000, 100, 100)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    alloc = Allocator(risk, ttl=100)
+
+    alloc.observe_usage(ACC, {0: (400, 4000)}, seq=10)
+    before = alloc.committed_of(ACC, 0)
+    alloc.observe_usage(ACC, {0: (50, 500)}, seq=3)     # arrives late
+    after = alloc.committed_of(ACC, 0)
+
+    return _report(
+        "c12 a stale reconciliation does not lower committed exposure",
+        after == before,
+        f"committed {before} -> {after} after a report with an older watermark",
+    )
+
+
+def c13_retire_does_not_revoke_a_live_lease():
+    """Retiring a holder stops future issuance to it. It does not take back a
+    lease that is still inside its term at a partitioned process."""
+    syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 1, 1000, 100, 100)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    collateral = 1_000
+
+    alloc = Allocator(risk, ttl=1000)
+    old = Gateway(0, risk)
+    leases, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
+    old.install_lease(leases[0])
+    gen1 = alloc.current_generation(ACC)
+
+    # the operator retires the holder while its term is still running
+    alloc.retire(ACC, 0)
+    alloc.bump_generation(ACC)
+    new_leases, _ = alloc.issue(ACC, collateral, {1: 1}, now=1)
+    new = Gateway(1, risk)
+    new.install_lease(new_leases[1])
+    gen2 = alloc.current_generation(ACC)
+
+    # the retired process is partitioned and keeps using its own generation
+    while old.admit(ACC, "A", 1, gen1, now=2)[0]:
+        pass
+    while new.admit(ACC, "B", 1, gen2, now=2)[0]:
+        pass
+
+    pos = merge([old, new])
+    return _report(
+        "c13 retiring a holder does not revoke its live lease",
+        worst_breach(risk, pos, collateral) == 0,
+        f"retired holder spent {old.used_risk(ACC)}, replacement "
+        f"{new.used_risk(ACC)}; requirement exceeds equity by "
+        f"{worst_breach(risk, pos, collateral)}",
+    )
+
+
 CASES = [
     c1_charge_bounds_global_requirement,
     c2_charge_bounds_gross_notional,
@@ -420,6 +514,9 @@ CASES = [
     c8_expiry_does_not_release_exposure,
     c9_infeasible_state_is_not_local_reduce_only,
     c10_incarnations_are_counted_separately,
+    c11_expired_but_unreconciled_holds_its_ceiling,
+    c12_stale_reconciliation_does_not_lower_exposure,
+    c13_retire_does_not_revoke_a_live_lease,
 ]
 
 

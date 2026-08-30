@@ -254,8 +254,8 @@ What changed:
 - An infeasible solve issues leases in **quarantine** mode and the gateway
   admits nothing. Reducing risk from that state needs a check against the whole
   account.
-- The per-scenario equity oracle is used in c4, c6, c7, c8, c9 and c10, not
-  only in the fuzz.
+- The per-scenario equity oracle is used in c6, c7, c8, c9 and c10. c4 tests
+  term behaviour only and does not use it.
 
 The lifecycle fuzz now retires holders, restarts processes under the same id,
 cuts collateral, and reports which branches it actually exercised.
@@ -292,3 +292,94 @@ filled; a gateway is a stateful authority whose crash and failover are not
 designed; and section 6.1's claim that a compromised gateway's blast radius is
 bounded by its lease has to be replaced by an admission that the gateway is
 inside the trusted computing base.
+
+## Fourth review round (2026-08-30)
+
+The rule from the previous round was half of one:
+
+> Expiry ends permission; only terminal, ordered reconciliation releases
+> exposure.
+
+Three counterexamples, all reproduced before any change:
+
+- **c11, an expired term with no usage report.** The previous round's c8 fed
+  the allocator the old holder's exact final usage before the replacement was
+  issued. A partitioned or crashed holder is precisely the case where that
+  report does not arrive. With it removed, capacity was reissued and the breach
+  came back. A term that ends without a terminal reconciliation now keeps its
+  whole ceiling occupied.
+- **c12, a stale reconciliation.** Reports now carry the holder's admission
+  watermark and one carrying an older watermark than a report already applied
+  is dropped.
+- **c13, retirement revoked a live lease.** `retire` deleted the holder's
+  authority, so a retired but partitioned process stopped being counted while
+  it was still inside its term. Retirement now only stops future issuance.
+
+`release(holder, seq, usage, now)` is the only path that lowers exposure. It is
+refused while the holder is still inside its term, and refused if its watermark
+is behind one already applied.
+
+A separate defect surfaced while testing: a holder that had been terminally
+released and was then leased again stayed marked as released, so its new
+ceiling was dropped from the accounting.
+
+### The fuzz was measuring the wrong thing
+
+Branch counters recorded that a retirement happened, not that it happened while
+the retired holder's term was still running. With terms drawn from 2 to 19 and
+40 to 60 orders per generation, an old term always ended before the next
+generation began, so the overlap those counters implied had never occurred.
+Terms are now drawn so a good share of them outlive a generation, and the
+counters record the condition rather than the event.
+
+The oracle was also too loose. A collateral cut can put an existing portfolio
+above its equity with no order having been admitted; that is a credit event for
+the liquidation path. The oracle now measures the shortfall before and after
+every admission and fails on an increase, which is the property the mechanism
+actually claims.
+
+    $ python3 tests/test_counterexamples.py
+    13 of 13 properties hold
+
+    $ python3 tests/test_lifecycle_fuzz.py
+    trials: 300, generations per trial: 6, admissions: 13322
+    conditions reached: retire_with_live_authority=48,
+      restart_with_live_predecessor=112, lost_usage_report=1812,
+      expired_unreconciled_term=1583,
+      old_holder_admitted_on_its_own_generation=8509,
+      stale_reconciliation_rejected=404, terminal_release_accepted=1602,
+      preexisting_breach_after_collateral_cut=27, quarantine=337,
+      lease_lost=1011, increase_inside_a_pre_cut_term=1
+    no admission increased the shortfall
+
+    extended run: trials 1500, admissions 67129, failures 0
+
+### A limit that is documented rather than fixed
+
+A collateral reduction cannot bind faster than the terms already outstanding. A
+gateway holding a lease issued before the cut keeps admitting inside that
+ceiling, and no message from the allocator can stop it: that is what the term
+is for. The fuzz separates these cases and counts them
+(`increase_inside_a_pre_cut_term`) rather than treating them as failures.
+
+The consequence for the design is that **the lease term is the latency of every
+credit decision**, not only of revocation. A venue that needs a collateral cut
+to bind within X must set the term below X, and §1.6's argument that the term
+follows from recompute cost is therefore incomplete.
+
+### Still open
+
+- A gateway tracks the orders it admitted, not the positions that filled. The
+  worst-fill envelope needs both a scenario form,
+  `max_k [ loss_k(filled) + sum_i max(0, loss_k(remaining_i)) ]`, and a gross
+  form, `sum_s mark_s * max(|p_s + B_s|, |p_s - S_s|)`. Implementing only the
+  first would reopen c2.
+- One holder incarnation is assumed to be a single-writer failure domain and
+  not clonable. Two processes restored onto the same incarnation each spend a
+  full ceiling. `Gateway.install_lease` now refuses a lease cut for a different
+  identity or incarnation, which is a check and not a proof.
+- A gateway is a stateful authority whose crash, rebuild and failover are not
+  designed.
+- Section 6.1's claim that a compromised gateway's blast radius is bounded by
+  its lease has to be replaced by an admission that the gateway is inside the
+  trusted computing base.

@@ -102,6 +102,9 @@ class Allocator:
         self.issued = {}
         self.authority = {}       # account -> holder -> (expiry, r_ceil, g_ceil)
         self.committed = {}       # account -> holder -> (r_used, g_used)
+        self.watermark = {}       # account -> holder -> highest report seq seen
+        self.released = {}        # account -> set of terminally reconciled holders
+        self.retired = {}         # account -> set of holders no longer issued to
 
     # ---- state -----------------------------------------------------------
 
@@ -111,26 +114,57 @@ class Allocator:
     def _comm(self, account):
         return self.committed.setdefault(account, {})
 
-    def observe_usage(self, account, usage):
-        """Record what each holder's admitted set occupies. Values only rise
-        here; they fall through `reconcile`."""
+    def committed_of(self, account, gateway):
+        return self._comm(account).get(_key(gateway), (0, 0))
+
+    def observe_usage(self, account, usage, seq=None):
+        """Record what each holder's admitted set occupies.
+
+        `seq` is the holder's admission high-water mark that this report
+        covers. A report carrying a watermark no higher than one already
+        applied is dropped: a late snapshot must not lower what a newer one
+        established. Without a watermark the report can only raise the figure.
+        """
         comm = self._comm(account)
+        wm = self.watermark.setdefault(account, {})
         for g, (r, gr) in usage.items():
             h = _key(g)
+            if seq is not None:
+                if seq <= wm.get(h, -1):
+                    continue
+                wm[h] = seq
             pr, pg = comm.get(h, (0, 0))
             comm[h] = (max(pr, r), max(pg, gr))
 
-    def reconcile(self, account, usage):
-        """Set committed exposure from an authoritative position view. The only
-        path that reduces it."""
-        comm = self._comm(account)
-        for g, (r, gr) in usage.items():
-            comm[_key(g)] = (r, gr)
+    def release(self, account, gateway, seq, usage, now):
+        """Terminal reconciliation.
+
+        The only path that lowers a holder's exposure, and it is refused unless
+        the holder can no longer admit: its term must have run out. The report
+        must also carry a watermark at least as high as anything already
+        applied, so that a late snapshot cannot undo a newer one.
+        """
+        h = _key(gateway)
+        rec = self._auth(account).get(h)
+        if rec and rec[0] > now:
+            return False, "still_within_term"
+        wm = self.watermark.setdefault(account, {})
+        if seq < wm.get(h, -1):
+            return False, "stale_watermark"
+        wm[h] = seq
+        self._comm(account)[h] = usage
+        self.released.setdefault(account, set()).add(h)
+        return True, "released"
 
     def retire(self, account, gateway):
-        """Drop a holder's authority. Its committed exposure stays until it has
-        been reconciled away."""
-        self._auth(account).pop(_key(gateway), None)
+        """Stop issuing to a holder.
+
+        This does not take back a lease that is still inside its term: a
+        retired process may be partitioned rather than stopped, and its
+        authority stands until the term ends or a terminal reconciliation
+        arrives.
+        """
+        self.retired.setdefault(account, set()).add(_key(gateway))
 
     # ---- safety condition ------------------------------------------------
 
@@ -157,17 +191,27 @@ class Allocator:
         """
         auth = self._auth(account)
         comm = self._comm(account)
+        released = self.released.get(account, set())
         risk_total = gross_total = 0
         for h in set(auth) | set(comm) | set(ceilings):
             new_r = ceilings.get(h, 0)
             new_g = new_r * self.gross_per_risk
-            live_r = live_g = 0
-            rec = auth.get(h)
-            if rec and rec[0] > now:
-                live_r, live_g = rec[1], rec[2]
             cr, cg = comm.get(h, (0, 0))
-            risk_total += max(new_r, live_r, cr)
-            gross_total += max(new_g, live_g, cg)
+            rec = auth.get(h)
+            if h in released:
+                # the holder has been proved unable to admit further and its
+                # final usage is known exactly
+                held_r, held_g = 0, 0
+            elif rec:
+                # a term that has run out without a terminal reconciliation
+                # leaves the allocator unable to say what was spent, so the
+                # whole ceiling stays occupied. expiry ends permission; only
+                # terminal, ordered reconciliation releases exposure.
+                held_r, held_g = rec[1], rec[2]
+            else:
+                held_r, held_g = 0, 0
+            risk_total += max(new_r, held_r, cr)
+            gross_total += max(new_g, held_g, cg)
         return risk_total, gross_total
 
     def _feasible(self, account, scale, weights, collateral, now):
@@ -237,8 +281,13 @@ class Allocator:
                            now + self.ttl, mode, risk_curve, gross_curve)
 
         auth = self._auth(account)
+        rel = self.released.setdefault(account, set())
         for g, lz in out.items():
             h = _key(g)
+            # a holder that was terminally released and is now leased again is
+            # live once more; leaving it marked released would drop its new
+            # ceiling from the accounting
+            rel.discard(h)
             prev = auth.get(h)
             if prev and prev[0] > now:
                 auth[h] = (max(prev[0], lz.expiry),

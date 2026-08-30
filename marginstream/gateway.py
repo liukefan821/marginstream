@@ -39,6 +39,14 @@ class Gateway:
     # ---- lease handling -------------------------------------------------
 
     def install_lease(self, lease):
+        # a lease is addressed to one holder; a process must not install one
+        # cut for a different identity or a different incarnation
+        if (getattr(lease, "gateway", self.id) != self.id
+                or getattr(lease, "incarnation", self.incarnation)
+                != self.incarnation):
+            raise ValueError(
+                f"lease for ({lease.gateway},{lease.incarnation}) installed at "
+                f"({self.id},{self.incarnation})")
         self.lease[lease.account] = lease
         prev = self.seen_generation.get(lease.account, 0)
         self.seen_generation[lease.account] = max(prev, lease.generation)
