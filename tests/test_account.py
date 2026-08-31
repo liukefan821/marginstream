@@ -188,6 +188,49 @@ def a13_no_division_in_the_safety_path():
     )
 
 
+def a14_the_account_is_a_fold_of_the_authoritative_log():
+    """Snapshot and restore only prove the object serialises. What matters is
+    that the account can be rebuilt from the ordering point's log after the
+    process holding it is gone."""
+    from marginstream.sequencer import Sequencer
+    from marginstream.allocator2 import Allocator
+    from marginstream.gateway2 import Gateway
+    rng = random.Random(11)
+    risk = model()
+    seqr = Sequencer()
+    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=10 ** 5)
+    gw = Gateway(0, risk, sequencer=seqr)
+    live = Account(risk, 400_000)
+    leases, _ = alloc.issue("X", live.equity(), {0: 1}, now=0)
+    gw.install_lease(leases[0])
+    gen = alloc.current_generation("X")
+
+    n = 0
+    for i in range(80):
+        if rng.random() < 0.6:
+            gw.admit("X", rng.choice(["A", "B"]),
+                     rng.choice([-7, -2, 2, 7]), gen, order_id=f"o{i}")
+        else:
+            liveorders = list(gw.live_orders("X").items())
+            if liveorders:
+                oid, (sym, rem) = rng.choice(liveorders)
+                if gw.fill("X", oid, rem)[0]:
+                    n += 1
+                    price = risk.symbols[sym].mark + rng.randrange(-90, 91)
+                    fee = abs(rem) * 3
+                    seqr.record_fill(oid, rem, price, fee)
+                    live.apply_fill(("log", n), sym, rem, price, fee)
+
+    rebuilt = seqr.rebuild_account(risk, 400_000)
+    return _report(
+        "a14 an account rebuilt from the log matches the live one",
+        rebuilt.digest() == live.digest()
+        and rebuilt.equity() == live.equity(),
+        f"{rebuilt.digest()} vs {live.digest()}; equity {rebuilt.equity()} "
+        f"vs {live.equity()}",
+    )
+
+
 CASES = [a1_opening_realises_nothing, a2_adding_to_a_position,
          a3_partial_close_in_profit, a4_partial_close_at_a_loss,
          a5_full_close, a6_long_through_zero_to_short,
@@ -195,7 +238,8 @@ CASES = [a1_opening_realises_nothing, a2_adding_to_a_position,
          a9_fees_are_counted_once, a10_repeated_fill_is_ignored,
          a11_snapshot_and_restore_are_exact,
          a12_identity_holds_on_random_sequences,
-         a13_no_division_in_the_safety_path]
+         a13_no_division_in_the_safety_path,
+         a14_the_account_is_a_fold_of_the_authoritative_log]
 
 
 def main():

@@ -64,6 +64,41 @@ def scripted(mode, fee=8_000, loss_per_lot=500):
             "shortfall": max(0, req - worst)}
 
 
+def binding_overstatement(delta):
+    """A binding ceiling with equity overstated by `delta`.
+
+    An earlier version of this experiment scanned hidden fees on a
+    configuration that was not binding, and concluded that the closure absorbs
+    an overstatement up to some fraction of equity. That conclusion was wrong:
+    it measured where a coarse scan first crossed, not a tolerance. The factor
+    of two is a closure, not a fault-tolerance margin, and at the binding point
+    any positive overstatement produces a breach of the same order.
+    """
+    syms = [Symbol("A", 0, 1000, 200, 100)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    collateral = 100_000
+    seqr = Sequencer()
+    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=10 ** 6)
+    gw = Gateway(0, risk, sequencer=seqr)
+    truth = Account(risk, collateral)
+
+    leases, _ = alloc.issue(ACC, truth.equity() + delta, {0: 1}, now=0)
+    gw.install_lease(leases[0])
+    gen = alloc.current_generation(ACC)
+    n = 0
+    while gw.admit(ACC, "A", 1, gen, order_id=f"b{n}")[0]:
+        n += 1
+    mark = risk.symbols["A"].mark
+    for i in range(n):
+        gw.fill(ACC, f"b{i}", 1)
+        truth.apply_fill(("f", i), "A", 1, mark, 0)
+    req = gw.used_risk(ACC) + risk.A_of_gross(gw.used_gross(ACC))
+    worst = min(truth.equity_at(f) for f in risk.grid)
+    return {"overstatement": delta, "ceiling": leases[0].risk_amount,
+            "admitted": n, "requirement": req, "worst_equity": worst,
+            "breach": max(0, req - worst)}
+
+
 def sweep(mode, trials=120, steps=120):
     import importlib.util
     spec = importlib.util.spec_from_file_location(
@@ -95,20 +130,25 @@ def main():
               f"{r['admitted']:>9} {r['requirement']:>12} "
               f"{r['worst_equity']:>13} {r['shortfall']:>10}")
 
-    print("\nPart B - how large an overstatement has to be before it bites\n")
-    print(f"  {'fee hidden':>12} {'reported':>10} {'actual':>10} "
-          f"{'requirement':>12} {'worst equity':>13} {'shortfall':>10}")
+    print("\nPart B - an overstatement at the binding point\n")
+    print(f"  {'overstated by':>14} {'ceiling':>9} {'admitted':>9} "
+          f"{'requirement':>12} {'worst equity':>13} {'breach':>8}")
+    binding = []
+    for delta in (0, 2, 100, 1_000, 10_000):
+        r = binding_overstatement(delta)
+        binding.append(r)
+        print(f"  {r['overstatement']:>14} {r['ceiling']:>9} "
+              f"{r['admitted']:>9} {r['requirement']:>12} "
+              f"{r['worst_equity']:>13} {r['breach']:>8}")
+    print("\n  at the binding point the breach tracks the overstatement: an "
+          "overstatement of 1,000 produces 800 and one of 10,000 produces "
+          "10,000. small values show nothing only because the lot size is 200 "
+          "of requirement, so the ceiling cannot move until the overstatement "
+          "buys a whole lot. an earlier version of this experiment reported a "
+          "tolerance of roughly 64 per cent of equity; that came from a "
+          "configuration that was not binding and is withdrawn. the factor of "
+          "two is a closure, not a margin against a misreported account.")
     threshold = None
-    for fee in (8_000, 16_000, 24_000, 32_000, 40_000, 48_000, 56_000):
-        r = scripted("ignores_fees", fee=fee)
-        print(f"  {fee:>12} {r['reported_equity']:>10} "
-              f"{r['actual_equity']:>10} {r['requirement']:>12} "
-              f"{r['worst_equity']:>13} {r['shortfall']:>10}")
-        if threshold is None and r["shortfall"] > 0:
-            threshold = fee
-    print(f"\n  the closure absorbs an overstatement until it reaches "
-          f"{threshold}, which is where the ceiling it buys exceeds what "
-          f"equity can carry")
 
     print("\nPart C - the random run of E1 with each account feeding issuance\n")
     sweeps = [sweep("exact"), sweep("ignores_realised"), sweep("ignores_fees")]

@@ -35,7 +35,7 @@ still fill.
 
 class _AccountState:
     __slots__ = ("filled", "orders", "filled_num", "pos_part_num",
-                 "buy_rem", "sell_rem", "gross_wf")
+                 "buy_rem", "sell_rem", "gross_wf", "debit_used")
 
     def __init__(self, n_scen):
         self.filled = {}                 # symbol -> filled lots
@@ -45,6 +45,8 @@ class _AccountState:
         self.buy_rem = {}                # symbol -> unfilled buy lots
         self.sell_rem = {}               # symbol -> unfilled sell lots (positive)
         self.gross_wf = 0                # running worst-fill gross
+        # execution cost this lease may still incur, plus what it has incurred
+        self.debit_used = 0
 
 
 class Gateway:
@@ -222,10 +224,14 @@ class Gateway:
             risk_after = self.risk.R(net)
             gross_after = self.risk.gross(net)
 
+        debit_after = st.debit_used + abs(qty) * self.risk.debit_per_lot(symbol)
+
         if risk_after > lease.risk_at(state):
             return False, "risk_envelope"
         if gross_after > lease.gross_at(state):
             return False, "gross_envelope"
+        if debit_after > lease.debit_at(state):
+            return False, "debit_envelope"
 
         lid = getattr(lease, "lease_id", None)
         if self.sequencer is not None and lid is not None:
@@ -250,6 +256,7 @@ class Gateway:
         self._bump(st.buy_rem if qty > 0 else st.sell_rem, symbol,
                    qty if qty > 0 else -qty)
         st.gross_wf += self._symbol_gross(st, symbol) - before_sym
+        st.debit_used = debit_after
         return True, "ok"
 
     # ---- order lifecycle -------------------------------------------------
@@ -308,6 +315,8 @@ class Gateway:
         self._bump(st.buy_rem if remaining > 0 else st.sell_rem, symbol,
                    -remaining if remaining > 0 else remaining)
         st.gross_wf += self._symbol_gross(st, symbol) - before_sym
+        # nothing was executed, so the cost this order reserved is released
+        st.debit_used -= abs(remaining) * self.risk.debit_per_lot(symbol)
         return True, "cancelled"
 
     # ---- reporting -------------------------------------------------------
@@ -349,6 +358,9 @@ class Gateway:
         if not self.worst_fill:
             return self.risk.R(self.local_positions(account))
         return self._risk_wf(st)
+
+    def used_debit(self, account):
+        return self._st(account).debit_used
 
     def used_gross(self, account):
         st = self._st(account)
@@ -397,6 +409,7 @@ class Gateway:
                     "filled": dict(st.filled),
                     "orders": {oid: (sym, rem)
                                for oid, (sym, rem, _v) in st.orders.items()},
+                    "debit_used": st.debit_used,
                 }
                 for acct, st in self.state.items()
             },
@@ -411,6 +424,7 @@ class Gateway:
         for k in range(self.n_scen):
             if vec[k] > 0:
                 st.pos_part_num[k] += vec[k]
+        st.debit_used += abs(qty) * self.risk.debit_per_lot(symbol)
         before = self._symbol_gross(st, symbol)
         self._bump(st.buy_rem if qty > 0 else st.sell_rem, symbol,
                    qty if qty > 0 else -qty)
@@ -441,6 +455,7 @@ class Gateway:
             st = self._st(acct)
             for oid, (sym, rem) in blob.get("orders", {}).items():
                 self._apply_admit(acct, oid, sym, rem)
+            st.debit_used = blob.get("debit_used", st.debit_used)
             for sym, q in blob.get("filled", {}).items():
                 if q:
                     self._bump(st.filled, sym, q)
@@ -474,7 +489,7 @@ class Gateway:
                 self.admission_seq[lease_id] = max(prev, seq)
                 applied += 1
             elif kind == "fill":
-                _k, oid, qty = ev
+                oid, qty = ev[1], ev[2]
                 for acct in list(self.state):
                     if oid in self.state[acct].orders:
                         self.fill(acct, oid, qty)

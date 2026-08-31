@@ -82,11 +82,15 @@ class Sequencer:
                             account, symbol, qty, holder))
         return True, "ok"
 
-    def record_fill(self, order_id, qty):
-        """An authoritative fill. Recorded here so a reconciliation can be
-        computed from this log rather than reported by the holder."""
+    def record_fill(self, order_id, qty, price=None, fee=0):
+        """An authoritative fill.
+
+        The price and the fee are recorded too, so the account ledger is a fold
+        of this log rather than something a component reports. Without them the
+        cash and profit-and-loss figures cannot be rebuilt after a crash.
+        """
         self.fills[order_id] = self.fills.get(order_id, 0) + qty
-        self.events.append(("fill", order_id, qty))
+        self.events.append(("fill", order_id, qty, price, fee))
 
     def record_cancel(self, order_id):
         if order_id in self.cancelled:
@@ -134,6 +138,24 @@ class Sequencer:
             g += mark * max(abs(fq + buy.get(symbol, 0)),
                             abs(fq - sell.get(symbol, 0)))
         return (r, g)
+
+    def rebuild_account(self, risk, collateral, mode="exact"):
+        """Fold the log into an account. This is the reference a recovered
+        account is compared against."""
+        from .account import Account
+        acct = Account(risk, collateral, mode=mode)
+        symbol_of = {}
+        n = 0
+        for ev in self.events:
+            if ev[0] == "admit":
+                symbol_of[ev[3]] = ev[5]
+            elif ev[0] == "fill":
+                oid, qty, price, fee = ev[1], ev[2], ev[3], ev[4]
+                if price is None:
+                    continue
+                n += 1
+                acct.apply_fill(("log", n), symbol_of.get(oid), qty, price, fee)
+        return acct
 
     def admissions_of(self, lease_id):
         """Every payload recorded under a lease, in order."""

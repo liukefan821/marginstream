@@ -780,3 +780,96 @@ account is safe.
   gateway and the account.
 - Section 6.1's blast-radius claim still needs replacing with an admission that
   the gateway is inside the trusted computing base.
+
+## Execution cost round (2026-08-31)
+
+### The hole
+
+A lease is solved against the equity the account has when it is issued. Two
+things reduce that equity afterwards and neither moves a position, so neither
+appears in the risk or the gross envelope: a fill lands at a price away from
+the mark, and a fee is charged.
+
+The counterexample puts the ceiling exactly at the binding point. With a
+ceiling of 50,000 the gateway admits 250 lots whose requirement is 50,000, and
+equity at the worst scenario is 50,000, so the account sits exactly on the
+line. A fee of one per lot moves equity to 49,750 and the account is past it by
+250; a fill one tick away from the mark does the same.
+
+The earlier E1 did not find this because its peak requirement was five per cent
+of equity. A constraint that is not binding hides every error of this shape,
+which is the third time in this project that a clean run turned out to come
+from slack rather than from correctness.
+
+### The third envelope
+
+    2 * sum_h risk_h + A(sum_h gross_h) + sum_h debit_h  <=  E0
+
+`debit_h` bounds the execution cost a holder can still incur: for each order,
+the quantity times the symbol's price band plus its fee cap. The band and the
+cap are venue policy, which is what makes the bound finite; without a price
+band there is no bound and no ceiling can be issued. A cancel acknowledgement
+releases the reservation because nothing was executed; a fill keeps it, since
+the cost has now been paid and equity has fallen by at most that much.
+
+The envelope is not free, and the size of what it costs is visible:
+
+    execution policy      ceiling  admitted  requirement  worst equity  breach
+    no cost                 50000       250        50000         50000       0
+    fee of 1 per lot        49875       249        49800         49951       0
+    one tick of slippage    49875       249        49800         49951       0
+    fee of 3 and 2 ticks    49382       246        49200         49570       0
+
+    $ python3 tests/test_execution_debit.py
+    3 of 3 properties hold
+
+### The account is now a fold of the log
+
+The ordering point records the price and the fee on every fill, so
+`Sequencer.rebuild_account` can produce the account from the log alone. The
+previous round's snapshot and restore test only showed that the object
+serialises; a14 compares an account rebuilt from the log against the live one.
+
+    $ python3 tests/test_account.py
+    14 of 14 properties hold
+
+### A claim withdrawn
+
+The previous round reported that the closure "absorbs an overstatement until it
+reaches 32,000 of a reported 50,000", and read that as a tolerance of about 64
+per cent. That was wrong. The number came from a configuration whose ceiling
+was not binding; it recorded where a coarse scan first crossed, not a property.
+At the binding point the breach tracks the overstatement:
+
+    overstated by   ceiling  admitted  requirement  worst equity   breach
+                0     50000       250        50000         50000        0
+                2     50001       250        50000         50000        0
+              100     50050       250        50000         50000        0
+             1000     50500       252        50400         49600      800
+            10000     55000       275        55000         45000    10000
+
+Small values show nothing only because one lot is 200 of requirement, so an
+overstatement has to buy a whole lot before the ceiling can move. **The factor
+of two is a closure, not a margin against a misreported account.**
+
+### Regression
+
+    test_algebra                admission bound held on every sample
+    test_counterexamples        16 of 16
+    test_worst_fill              6 of 6
+    test_worst_fill_exhaustive  closed form equals enumeration
+    test_lifecycle_fuzz         no admission worsened any scenario
+    test_recovery                6 of 6
+    test_account                14 of 14
+    test_execution_debit         3 of 3
+    e1_equity_safety            no state reached a requirement above equity
+    e4_recovery                 every recovery reproduced the state the log implies
+
+### Still open
+
+- E1's random configuration still runs well below the binding point. Until it
+  is driven to the ceiling its clean result is weaker evidence than the
+  directed cases.
+- Liquidation latency and the operational failure experiments.
+- The allocator's own snapshot and failover.
+- Section 6.1's blast-radius claim.

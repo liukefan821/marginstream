@@ -73,7 +73,7 @@ def run_trial(seed, stats, account_mode="exact"):
                     mark = risk.symbols[sym].mark
                     price = mark + rng.randrange(-mark // 8, mark // 8 + 1)
                     fee = abs(part) * price // 5000
-                    seqr.record_fill(oid, part)
+                    seqr.record_fill(oid, part, price, fee)
                     book.apply_fill(("f", fill_no), sym, part, price, fee)
                     truth.apply_fill(("f", fill_no), sym, part, price, fee)
                     stats["fills"] += 1

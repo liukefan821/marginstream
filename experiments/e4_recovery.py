@@ -74,7 +74,7 @@ def one_trial(seed, c):
                 oid, (_s, rem) = rng.choice(live)
                 part = rem // 2 or rem
                 if part and gw.fill(ACC, oid, part)[0]:
-                    seqr.record_fill(oid, part)
+                    seqr.record_fill(oid, part, risk.symbols[_s].mark, 0)
                     c["fills"] += 1
                     pending_partial = oid if abs(part) < abs(rem) else None
         elif r < 0.80:

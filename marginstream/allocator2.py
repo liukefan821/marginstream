@@ -42,12 +42,12 @@ DECAY_DEN = 1000
 
 class Lease:
     __slots__ = ("account", "epoch", "generation", "gateway", "incarnation",
-                 "expiry", "mode", "risk_curve", "gross_curve", "lease_id",
-                 "credit_version")
+                 "expiry", "mode", "risk_curve", "gross_curve", "debit_curve",
+                 "lease_id", "credit_version")
 
     def __init__(self, account, epoch, generation, gateway, incarnation,
-                 expiry, mode, risk_curve, gross_curve, lease_id=None,
-                 credit_version=0):
+                 expiry, mode, risk_curve, gross_curve, debit_curve=None,
+                 lease_id=None, credit_version=0):
         self.account = account
         self.epoch = epoch
         self.generation = generation
@@ -57,6 +57,8 @@ class Lease:
         self.mode = mode                    # "normal" or "quarantine"
         self.risk_curve = tuple(risk_curve)
         self.gross_curve = tuple(gross_curve)
+        self.debit_curve = tuple(debit_curve if debit_curve is not None
+                                 else (0,) * len(self.risk_curve))
         self.lease_id = lease_id
         self.credit_version = credit_version
 
@@ -74,6 +76,9 @@ class Lease:
     def gross_at(self, k):
         return self._at(self.gross_curve, k)
 
+    def debit_at(self, k):
+        return self._at(self.debit_curve, k)
+
     @property
     def risk_amount(self):
         return self.risk_curve[0]
@@ -81,6 +86,10 @@ class Lease:
     @property
     def gross_amount(self):
         return self.gross_curve[0]
+
+    @property
+    def debit_amount(self):
+        return self.debit_curve[0]
 
 
 def _key(g):
@@ -100,6 +109,11 @@ class Allocator:
         self.shape = tuple(shape)
         self.ttl = ttl
         self.gross_per_risk = gross_per_risk
+        ratio = risk.max_debit_ratio()
+        # execution cost per unit of risk. a fill lands inside a price band and
+        # pays a fee, and both reduce equity after the lease was solved, so the
+        # solve has to reserve for them.
+        self.debit_num, self.debit_den = ratio if ratio else (0, 1)
         self.residual = residual
         self.epoch = 0
         self.generation = {}
@@ -261,12 +275,17 @@ class Allocator:
             gross_total += max(new_g, hg, cg)
         return risk_total, gross_total
 
+    def debit_of(self, risk_amount):
+        if self.debit_num == 0:
+            return 0
+        return -((-risk_amount * self.debit_num) // self.debit_den)
+
     def _feasible(self, account, scale, weights, collateral, now):
         ceilings = self._ceilings(account, scale, weights)
         risk_total, gross_total = self._bounds(account, ceilings, now)
         den = self.risk.A_den()
-        lhs = ((2 * risk_total + self.residual) * den
-               + self.risk.A_num(gross_total))
+        lhs = ((2 * risk_total + self.debit_of(risk_total) + self.residual)
+               * den + self.risk.A_num(gross_total))
         return lhs <= collateral * den
 
     def solve_scale(self, account, collateral, weights, now):
@@ -328,11 +347,12 @@ class Allocator:
             risk_curve = tuple(max((top * self.shape[k]) // denom, floor_r)
                                for k in range(len(self.shape)))
             gross_curve = tuple(r * self.gross_per_risk for r in risk_curve)
+            debit_curve = tuple(self.debit_of(r) for r in risk_curve)
             lid = self._next_lease_id
             self._next_lease_id += 1
             out[g] = Lease(account, self.epoch, gen, h[0], h[1],
                            now + self.ttl, mode, risk_curve, gross_curve,
-                           lease_id=lid, credit_version=cv)
+                           debit_curve, lease_id=lid, credit_version=cv)
 
         auth = self._auth(account)
         for g, lz in out.items():

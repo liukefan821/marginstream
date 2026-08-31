@@ -25,9 +25,11 @@ BETA_DEN = 100
 class Symbol:
     name: str
     shard: int
-    mark: int        # price per lot, minor units
-    scan: int        # adverse move per lot covered by the scenario grid
-    beta: int        # factor loading, in units of 1/BETA_DEN
+    mark: int              # price per lot, minor units
+    scan: int              # adverse move per lot covered by the scenario grid
+    beta: int              # factor loading, in units of 1/BETA_DEN
+    band: int = 0          # furthest a fill may land from the mark, per lot
+    fee_per_lot: int = 0   # most that may be charged per lot
 
 
 class RiskModel:
@@ -135,6 +137,27 @@ class RiskModel:
     def marginal_R(self, positions, name, qty):
         """Retained for reporting. Not used by the admission rule."""
         return self.R_after(positions, name, qty) - self.R(positions)
+
+    def debit_per_lot(self, name):
+        """The most one lot of this symbol can cost beyond the mark: the price
+        band it may fill inside, plus the fee cap."""
+        sym = self.symbols[name]
+        return sym.band + sym.fee_per_lot
+
+    def max_debit_ratio(self):
+        """(num, den) bounding execution cost per unit of scenario risk, taken
+        over the symbols. Used to size the third envelope from the first."""
+        best_num, best_den = 0, 1
+        for name in self.order:
+            r = self.R({name: 1})
+            d = self.debit_per_lot(name)
+            if r <= 0:
+                if d > 0:
+                    return None            # cost with no risk cannot be sized
+                continue
+            if d * best_den > best_num * r:
+                best_num, best_den = d, r
+        return best_num, best_den
 
     def min_margin_rate_num(self):
         """Numerator of the smallest R-per-notional ratio across symbols.

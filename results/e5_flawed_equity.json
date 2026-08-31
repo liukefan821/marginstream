@@ -60,5 +60,5 @@
       "min_equity": 205903
     }
   ],
-  "fee_threshold": 32000
+  "fee_threshold": null
 }
