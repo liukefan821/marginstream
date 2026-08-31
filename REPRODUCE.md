@@ -873,3 +873,98 @@ of two is a closure, not a margin against a misreported account.**
 - Liquidation latency and the operational failure experiments.
 - The allocator's own snapshot and failover.
 - Section 6.1's blast-radius claim.
+
+## Execution policy round (2026-08-31)
+
+The previous round reserved against a price band and a fee cap that nothing
+enforced, and wired the envelope into a simulator that then ran with both set
+to zero. Three gates were missing.
+
+### The ordering point enforces the terms the order was admitted under
+
+`submit` now records, alongside the order, the reference mark, the price band
+and the fee cap in force. `record_fill(fill_id, order_id, qty, price, fee)`
+refuses, without writing anything or moving any state, when: the fill
+identifier has been used with different figures; the order is unknown or
+cancelled; the direction disagrees with the order; the cumulative quantity
+would exceed what was admitted; the price falls outside the band; or the fee
+exceeds the cap for that quantity. A retry carrying the same figures succeeds
+again and lands once.
+
+`marginstream/execution.py` fixes the order of operations: the ordering point
+decides first, and only an accepted fill is folded into the gateway and the
+account. The previous code called the gateway first, which moved state that the
+authority then refused.
+
+### Historical execution cost stops occupying the envelope
+
+Debit is split into what is still ahead of the account and what has been
+executed. When a lease is issued against an equity that already reflects a
+cost, that cost is behind the new baseline and is not reserved for again;
+orders still live keep their future reservation.
+
+Without that, capacity decays every term. The two trajectories, on an account
+small enough for the debit envelope to bind:
+
+    baseline frozen     52  31  10   2   2   2   2   2   2   2   2   2
+    baseline advancing  52  45  38  37  37  37  37  37  37  37  37  37
+
+    $ python3 tests/test_execution_debit.py
+    7 of 7 properties hold
+
+d4 and d5 confirm that an over-cap fee and an out-of-band fill are refused
+rather than merely harmless: no fill is accepted in either case.
+
+### E1 now uses the policy it claims to
+
+Every symbol carries a non-zero band and fee cap, the fill generator stays
+inside them, and every fill goes through the authoritative path. All three
+envelopes are exercised and none of the generated fills is refused, which is
+what shows the generator and the policy agree.
+
+    $ python3 experiments/e1_equity_safety.py
+    trials: 300, steps per trial: 160
+    actions: admitted=4220, refused=15882, fills=4576, fills_refused=0,
+      cancels=1818, reissues=7672
+    peak use of each envelope: risk 38%, gross 19%, debit 39%
+    account: realised=109453, unrealised=-42626, fees=3366
+    max requirement 30273, peak requirement as a share of equity 5%,
+      violations 0
+
+    binding trial, filled at the worst price and fee the policy allows
+      admitted 245, requirement 49000, equity 98285,
+      worst-scenario equity 49285, breach 0
+      envelope use: risk 99%, gross 0%, debit 99%;
+      requirement is 49% of equity
+
+The random trials stay well inside the envelopes, so their clean result is
+weaker evidence than the binding trial, which drives the risk and debit
+envelopes to 99 per cent and fills everything at the worst price and fee the
+policy allows.
+
+### Wording corrected
+
+E5's closing line described the random sweep as measuring a tolerance. It does
+not: it shows unused workload slack. Part B is where the breach is shown
+tracking the overstatement once the ceiling binds.
+
+### Regression
+
+    test_account                14 of 14
+    test_algebra                admission bound held on every sample
+    test_counterexamples        16 of 16
+    test_execution_debit         7 of 7
+    test_lifecycle_fuzz         no admission worsened any scenario
+    test_recovery                6 of 6
+    test_worst_fill              6 of 6
+    test_worst_fill_exhaustive  closed form equals enumeration
+    e1_equity_safety            binding trial at 99% of both envelopes, no breach
+    e4_recovery                 every recovery reproduced the state the log implies
+
+### Still open
+
+- Liquidation latency and the operational failure experiments.
+- Terminal reconciliation returns risk and gross; it does not yet return the
+  execution cost a new equity has not absorbed.
+- The allocator's own snapshot and failover.
+- Section 6.1's blast-radius claim.

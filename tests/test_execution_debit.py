@@ -57,13 +57,18 @@ def _drive(fee_per_lot, slip, band=None, fee_cap=None):
         admitted.append(f"o{i}")
 
     mark = risk.symbols["A"].mark
+    from marginstream.execution import execute_fill
+    accepted = refused = 0
     for n, oid in enumerate(admitted):
-        gw.fill(ACC, oid, 1)
-        acct.apply_fill(("f", n), "A", 1, mark + slip, fee_per_lot)
+        ok, _ = execute_fill(seqr, gw, acct, f"f{n}", oid, ACC, "A", 1,
+                             mark + slip, fee_per_lot)
+        accepted += 1 if ok else 0
+        refused += 0 if ok else 1
 
     req = gw.used_risk(ACC) + risk.A_of_gross(gw.used_gross(ACC))
     worst = min(acct.equity_at(f) for f in risk.grid)
     return {"ceiling": leases[0].risk_amount, "admitted": len(admitted),
+            "fills_accepted": accepted, "fills_refused": refused,
             "requirement": req, "worst_equity": worst,
             "breach": max(0, req - worst), "equity": acct.equity()}
 
@@ -101,9 +106,114 @@ def d3_both_together():
     )
 
 
+def d4_a_fee_above_the_cap_is_refused():
+    """The envelope reserves against the venue's fee cap. Nothing currently
+    stops a fill from charging more than that cap."""
+    r = _drive(fee_per_lot=2, slip=0, band=0, fee_cap=1)
+    return _report(
+        "d4 a fee above the policy cap does not reach the account",
+        r["breach"] == 0 and r["fills_accepted"] == 0
+        and r["fills_refused"] > 0,
+        f"cap 1 per lot, charged 2; fills accepted {r['fills_accepted']}, "
+        f"refused {r['fills_refused']}; breach {r['breach']}",
+    )
+
+
+def d5_a_fill_outside_the_band_is_refused():
+    r = _drive(fee_per_lot=0, slip=2, band=1, fee_cap=0)
+    return _report(
+        "d5 a fill outside the policy band does not reach the account",
+        r["breach"] == 0 and r["fills_accepted"] == 0
+        and r["fills_refused"] > 0,
+        f"band 1 tick, filled 2 away; fills accepted {r['fills_accepted']}, "
+        f"refused {r['fills_refused']}; breach {r['breach']}",
+    )
+
+
+def d6_a_repeated_fill_counts_once():
+    """The same fill retried has to land once."""
+    syms = [Symbol("A", 0, 1000, 200, 100, 5, 2)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    seqr = Sequencer()
+    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=10 ** 6)
+    gw = Gateway(0, risk, sequencer=seqr)
+    acct = Account(risk, 100_000)
+    leases, _ = alloc.issue(ACC, acct.equity(), {0: 1}, now=0)
+    gw.install_lease(leases[0])
+    gen = alloc.current_generation(ACC)
+    gw.admit(ACC, "A", 1, gen, order_id="o1")
+
+    seqr.record_fill("fill-1", "o1", 1, 1000, 1)
+    seqr.record_fill("fill-1", "o1", 1, 1000, 1)          # a retry
+    rebuilt = seqr.rebuild_account(risk, 100_000)
+    return _report(
+        "d6 a fill retried under the same identifier lands once",
+        rebuilt.positions() == {"A": 1} and rebuilt.fees == 1,
+        f"positions {rebuilt.positions()}, fees {rebuilt.fees}",
+    )
+
+
+def d7_historical_execution_cost_is_not_reserved_twice():
+    """Once a lease is issued against an equity that already reflects a cost,
+    that cost must stop occupying the envelope. Otherwise capacity falls a
+    little every generation and eventually reaches zero."""
+    syms = [Symbol("A", 0, 1000, 200, 100, 5, 2)]
+    risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
+    from marginstream.execution import execute_fill
+    seqr = Sequencer()
+    alloc = Allocator(risk, ttl=5, gross_per_risk=10 ** 6)
+    gw = Gateway(0, risk, sequencer=seqr)
+    # a small account so the execution-cost envelope is the binding one
+    acct = Account(risk, 3_000)
+
+    headroom = []
+    live_orders = []
+    n = 0
+    now = 0
+    prev = None
+    for generation in range(12):
+        # the protocol between terms: fence the old lease, reconcile it, then
+        # issue the next against the equity that fills have already changed
+        if prev is not None:
+            now += 10
+            seal = seqr.fence(prev)
+            alloc.release(ACC, prev, seal, seqr)
+        alloc.bump_generation(ACC)
+        leases, _ = alloc.issue(ACC, acct.equity(), {0: 1}, now=now)
+        gw.install_lease(leases[0])
+        prev = leases[0].lease_id
+        gen = alloc.current_generation(ACC)
+        headroom.append(gw.lease[ACC].debit_at(0) - gw.used_debit(ACC))
+
+        for j in range(3):
+            n += 1
+            oid = f"g{generation}-{j}"
+            if not gw.admit(ACC, "A", 1, gen, order_id=oid, now=now)[0]:
+                break
+            if j < 2:
+                execute_fill(seqr, gw, acct, f"x{n}", oid, ACC, "A", 1,
+                             1000 + 5, 2)
+            else:
+                live_orders.append(oid)
+
+    still_live = len(gw.live_orders(ACC))
+    # headroom settles at what the live orders reserve rather than falling
+    # towards zero as historical cost piles up
+    return _report(
+        "d7 cost already inside equity stops occupying the envelope",
+        headroom[-1] > headroom[0] // 2 and still_live > 0,
+        f"debit headroom per generation {headroom}; orders still live "
+        f"{still_live}",
+    )
+
+
 CASES = [d1_a_fee_does_not_breach_a_binding_ceiling,
          d2_slippage_does_not_breach_a_binding_ceiling,
-         d3_both_together]
+         d3_both_together,
+         d4_a_fee_above_the_cap_is_refused,
+         d5_a_fill_outside_the_band_is_refused,
+         d6_a_repeated_fill_counts_once,
+         d7_historical_execution_cost_is_not_reserved_twice]
 
 
 def main():

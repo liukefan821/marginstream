@@ -35,7 +35,8 @@ still fill.
 
 class _AccountState:
     __slots__ = ("filled", "orders", "filled_num", "pos_part_num",
-                 "buy_rem", "sell_rem", "gross_wf", "debit_used")
+                 "buy_rem", "sell_rem", "gross_wf", "debit_reserved",
+                 "debit_incurred_total", "debit_baseline")
 
     def __init__(self, n_scen):
         self.filled = {}                 # symbol -> filled lots
@@ -45,8 +46,14 @@ class _AccountState:
         self.buy_rem = {}                # symbol -> unfilled buy lots
         self.sell_rem = {}               # symbol -> unfilled sell lots (positive)
         self.gross_wf = 0                # running worst-fill gross
-        # execution cost this lease may still incur, plus what it has incurred
-        self.debit_used = 0
+        # execution cost still ahead of this account at this gateway
+        self.debit_reserved = 0
+        # bound on cost already executed, monotone
+        self.debit_incurred_total = 0
+        # what had been executed when the current lease was solved. anything at
+        # or before this is already inside the equity the lease was issued
+        # against and must not be reserved for twice.
+        self.debit_baseline = 0
 
 
 class Gateway:
@@ -167,6 +174,10 @@ class Gateway:
                 f"lease for ({lease.gateway},{lease.incarnation}) installed at "
                 f"({self.id},{self.incarnation})")
         self.lease[lease.account] = lease
+        # the equity this lease was solved against already reflects every fill
+        # folded in so far, so those costs are not reserved for again
+        st = self._st(lease.account)
+        st.debit_baseline = st.debit_incurred_total
         self.admission_seq.setdefault(getattr(lease, "lease_id", None), 0)
         prev = self.seen_generation.get(lease.account, 0)
         self.seen_generation[lease.account] = max(prev, lease.generation)
@@ -224,7 +235,9 @@ class Gateway:
             risk_after = self.risk.R(net)
             gross_after = self.risk.gross(net)
 
-        debit_after = st.debit_used + abs(qty) * self.risk.debit_per_lot(symbol)
+        debit_after = (st.debit_reserved
+                       + (st.debit_incurred_total - st.debit_baseline)
+                       + abs(qty) * self.risk.debit_per_lot(symbol))
 
         if risk_after > lease.risk_at(state):
             return False, "risk_envelope"
@@ -237,9 +250,11 @@ class Gateway:
         if self.sequencer is not None and lid is not None:
             nxt = self.admission_seq.get(lid, 0) + 1
             oid = order_id if order_id is not None else f"{lid}:{nxt}"
+            sym = self.risk.symbols[symbol]
             ok, why = self.sequencer.submit(
                 lid, nxt, oid, account, symbol, qty,
-                holder=(self.id, self.incarnation))
+                holder=(self.id, self.incarnation), mark=sym.mark,
+                band=sym.band, fee_cap=sym.fee_per_lot)
             if not ok:
                 return False, why
             self.admission_seq[lid] = nxt
@@ -256,7 +271,7 @@ class Gateway:
         self._bump(st.buy_rem if qty > 0 else st.sell_rem, symbol,
                    qty if qty > 0 else -qty)
         st.gross_wf += self._symbol_gross(st, symbol) - before_sym
-        st.debit_used = debit_after
+        st.debit_reserved += abs(qty) * self.risk.debit_per_lot(symbol)
         return True, "ok"
 
     # ---- order lifecycle -------------------------------------------------
@@ -286,6 +301,11 @@ class Gateway:
                 st.pos_part_num[k] += new_vec[k]
             st.filled_num[k] += part[k]
 
+        # the reservation becomes an executed cost; it stays counted until a
+        # lease is issued against an equity that already reflects it
+        d = abs(qty) * self.risk.debit_per_lot(symbol)
+        st.debit_reserved -= d
+        st.debit_incurred_total += d
         self._bump(st.filled, symbol, qty)
         self._bump(st.buy_rem if remaining > 0 else st.sell_rem, symbol,
                    -qty if remaining > 0 else qty)
@@ -316,7 +336,7 @@ class Gateway:
                    -remaining if remaining > 0 else remaining)
         st.gross_wf += self._symbol_gross(st, symbol) - before_sym
         # nothing was executed, so the cost this order reserved is released
-        st.debit_used -= abs(remaining) * self.risk.debit_per_lot(symbol)
+        st.debit_reserved -= abs(remaining) * self.risk.debit_per_lot(symbol)
         return True, "cancelled"
 
     # ---- reporting -------------------------------------------------------
@@ -360,7 +380,8 @@ class Gateway:
         return self._risk_wf(st)
 
     def used_debit(self, account):
-        return self._st(account).debit_used
+        st = self._st(account)
+        return st.debit_reserved + (st.debit_incurred_total - st.debit_baseline)
 
     def used_gross(self, account):
         st = self._st(account)
@@ -409,7 +430,9 @@ class Gateway:
                     "filled": dict(st.filled),
                     "orders": {oid: (sym, rem)
                                for oid, (sym, rem, _v) in st.orders.items()},
-                    "debit_used": st.debit_used,
+                    "debit_reserved": st.debit_reserved,
+                    "debit_incurred_total": st.debit_incurred_total,
+                    "debit_baseline": st.debit_baseline,
                 }
                 for acct, st in self.state.items()
             },
@@ -424,7 +447,7 @@ class Gateway:
         for k in range(self.n_scen):
             if vec[k] > 0:
                 st.pos_part_num[k] += vec[k]
-        st.debit_used += abs(qty) * self.risk.debit_per_lot(symbol)
+        st.debit_reserved += abs(qty) * self.risk.debit_per_lot(symbol)
         before = self._symbol_gross(st, symbol)
         self._bump(st.buy_rem if qty > 0 else st.sell_rem, symbol,
                    qty if qty > 0 else -qty)
@@ -455,7 +478,10 @@ class Gateway:
             st = self._st(acct)
             for oid, (sym, rem) in blob.get("orders", {}).items():
                 self._apply_admit(acct, oid, sym, rem)
-            st.debit_used = blob.get("debit_used", st.debit_used)
+            st.debit_reserved = blob.get("debit_reserved", st.debit_reserved)
+            st.debit_incurred_total = blob.get("debit_incurred_total",
+                                               st.debit_incurred_total)
+            st.debit_baseline = blob.get("debit_baseline", st.debit_baseline)
             for sym, q in blob.get("filled", {}).items():
                 if q:
                     self._bump(st.filled, sym, q)

@@ -44,6 +44,9 @@ class Sequencer:
         # the same facts in arrival order, which is what a recovering component
         # replays. `position` is the watermark a snapshot records.
         self.events = []
+        self.terms = {}             # order_id -> (symbol, qty, mark, band, cap, policy)
+        self.fill_log = {}          # fill_id -> payload, for idempotent retry
+        self.filled_qty = {}        # order_id -> quantity filled so far
 
     def position(self):
         return len(self.events)
@@ -54,7 +57,7 @@ class Sequencer:
         return list(enumerate(self.events))[watermark:]
 
     def submit(self, lease_id, admission_seq, order_id, account, symbol, qty,
-               holder=None):
+               holder=None, mark=None, band=0, fee_cap=0, policy=0):
         """Return (accepted, reason).
 
         The payload is recorded, so a reconciliation can be computed from this
@@ -64,6 +67,7 @@ class Sequencer:
         """
         key = (lease_id, admission_seq)
         payload = (order_id, account, symbol, qty, holder)
+        terms = (symbol, qty, mark, band, fee_cap, policy)
         if key in self.log:
             if self.log[key] == payload:
                 return True, "idempotent_retry"
@@ -78,25 +82,57 @@ class Sequencer:
             return False, "sequence_gap"
         self.last_seq[lease_id] = admission_seq
         self.log[key] = payload
+        # the parameters a fill under this order will be checked against.
+        # keeping them here is what lets the ordering point enforce policy
+        # rather than trust whoever reports the fill.
+        self.terms[order_id] = terms
         self.events.append(("admit", lease_id, admission_seq, order_id,
                             account, symbol, qty, holder))
         return True, "ok"
 
-    def record_fill(self, order_id, qty, price=None, fee=0):
-        """An authoritative fill.
+    def record_fill(self, fill_id, order_id, qty, price, fee=0):
+        """An authoritative fill, checked against the terms the order was
+        admitted under.
 
-        The price and the fee are recorded too, so the account ledger is a fold
-        of this log rather than something a component reports. Without them the
-        cash and profit-and-loss figures cannot be rebuilt after a crash.
+        Nothing is written and no state moves unless every check passes, so a
+        rejected fill leaves the ordering point, the gateway and the account
+        exactly as they were. Returns (accepted, reason).
         """
+        payload = (order_id, qty, price, fee)
+        prior = self.fill_log.get(fill_id)
+        if prior is not None:
+            if prior == payload:
+                return True, "idempotent_retry"
+            return False, "conflicting_fill_payload"
+
+        terms = self.terms.get(order_id)
+        if terms is None:
+            return False, "unknown_order"
+        symbol, admitted_qty, mark, band, fee_cap, _policy = terms
+        if order_id in self.cancelled:
+            return False, "order_cancelled"
+        if qty == 0 or (qty > 0) != (admitted_qty > 0):
+            return False, "wrong_direction"
+        done = self.filled_qty.get(order_id, 0)
+        if abs(done + qty) > abs(admitted_qty):
+            return False, "overfill"
+        if mark is not None and band is not None and abs(price - mark) > band:
+            return False, "outside_price_band"
+        if fee > fee_cap * abs(qty):
+            return False, "fee_above_cap"
+
+        self.fill_log[fill_id] = payload
+        self.filled_qty[order_id] = done + qty
         self.fills[order_id] = self.fills.get(order_id, 0) + qty
-        self.events.append(("fill", order_id, qty, price, fee))
+        self.events.append(("fill", order_id, qty, price, fee, fill_id))
+        return True, "ok"
 
     def record_cancel(self, order_id):
         if order_id in self.cancelled:
-            return
+            return False, "already_cancelled"
         self.cancelled.add(order_id)
         self.events.append(("cancel", order_id))
+        return True, "ok"
 
     def reconcile(self, lease_id, risk):
         """Replay the log for one lease and return its worst-fill occupancy.

@@ -15,6 +15,7 @@ from marginstream.risk import RiskModel, Symbol
 from marginstream.allocator2 import Allocator
 from marginstream.gateway2 import Gateway
 from marginstream.sequencer import Sequencer
+from marginstream.execution import execute_fill, execute_cancel
 
 ACC = "X"
 
@@ -28,7 +29,8 @@ def _report(name, ok, detail):
 
 def build(seed=1, steps=120):
     rng = random.Random(seed)
-    syms = [Symbol(f"S{i}", 0, 800 + 200 * i, 40 + 10 * i, 60 + 20 * i)
+    syms = [Symbol(f"S{i}", 0, 800 + 200 * i, 40 + 10 * i, 60 + 20 * i,
+                   band=10, fee_per_lot=2)
             for i in range(4)]
     risk = RiskModel(syms, addon_kappa=1, addon_scale=10 ** 6)
     seqr = Sequencer()
@@ -49,16 +51,15 @@ def build(seed=1, steps=120):
         elif r < 0.80:
             live = list(gw.live_orders(ACC).items())
             if live:
-                oid, (_s, rem) = rng.choice(live)
+                oid, (sym, rem) = rng.choice(live)
                 part = rem if rng.random() < 0.5 else (rem // 2 or rem)
-                if part and gw.fill(ACC, oid, part)[0]:
-                    seqr.record_fill(oid, part)
+                if part:
+                    execute_fill(seqr, gw, None, f"fill{i}", oid, ACC, sym,
+                                 part, risk.symbols[sym].mark, 0)
         else:
             live = list(gw.live_orders(ACC))
             if live:
-                oid = rng.choice(live)
-                if gw.cancel_ack(ACC, oid)[0]:
-                    seqr.record_cancel(oid)
+                execute_cancel(seqr, gw, ACC, rng.choice(live))
         if i == snapshot_at:
             snapshot = gw.snapshot()
     return risk, seqr, alloc, gw, snapshot, gen

@@ -27,6 +27,7 @@ from marginstream.risk import RiskModel, Symbol
 from marginstream.allocator2 import Allocator
 from marginstream.gateway2 import Gateway
 from marginstream.sequencer import Sequencer
+from marginstream.execution import execute_fill, execute_cancel
 
 ACC = "X"
 TRIALS = 200
@@ -47,7 +48,8 @@ def fresh_counts():
 
 def one_trial(seed, c):
     rng = random.Random(seed)
-    syms = [Symbol(f"S{i}", 0, 700 + 150 * i, 30 + 12 * i, 50 + 25 * i)
+    syms = [Symbol(f"S{i}", 0, 700 + 150 * i, 30 + 12 * i, 50 + 25 * i,
+                   band=8, fee_per_lot=1)
             for i in range(4)]
     risk = RiskModel(syms, addon_kappa=1, addon_scale=10 ** 6)
     seqr = Sequencer()
@@ -71,18 +73,21 @@ def one_trial(seed, c):
         elif r < 0.68:
             live = list(gw.live_orders(ACC).items())
             if live:
-                oid, (_s, rem) = rng.choice(live)
+                oid, (sym, rem) = rng.choice(live)
                 part = rem // 2 or rem
-                if part and gw.fill(ACC, oid, part)[0]:
-                    seqr.record_fill(oid, part, risk.symbols[_s].mark, 0)
-                    c["fills"] += 1
-                    pending_partial = oid if abs(part) < abs(rem) else None
+                if part:
+                    okf, _ = execute_fill(seqr, gw, None, f"{seed}f{i}", oid,
+                                          ACC, sym, part,
+                                          risk.symbols[sym].mark, 0)
+                    if okf:
+                        c["fills"] += 1
+                        pending_partial = (oid if abs(part) < abs(rem)
+                                           else None)
         elif r < 0.80:
             live = list(gw.live_orders(ACC))
             if live:
                 oid = rng.choice(live)
-                if gw.cancel_ack(ACC, oid)[0]:
-                    seqr.record_cancel(oid)
+                if execute_cancel(seqr, gw, ACC, oid)[0]:
                     c["cancels"] += 1
         elif r < 0.88:
             snaps.append(gw.snapshot())

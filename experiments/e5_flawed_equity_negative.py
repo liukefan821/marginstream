@@ -158,10 +158,11 @@ def main():
         print(f"  {sw['mode']:>18} {sw['trials']:>7} "
               f"{sw['trials_with_a_breach']:>21} "
               f"{sw['max_overstatement']:>22} {sw['min_equity']:>16}")
-    print("\n  in this configuration the overstatement never approaches the "
-          "share of equity Part B shows is needed, so no trial breaches. that "
-          "is a measurement of the tolerance, not evidence that a misreported "
-          "account is safe.")
+    print("\n  no trial breaches here because the random workload leaves the "
+          "envelopes far from binding, so an overstatement of this size buys "
+          "capacity the flow never uses. that is unused workload slack, not a "
+          "tolerance: Part B shows the breach tracking the overstatement once "
+          "the ceiling binds.")
 
     os.makedirs("results", exist_ok=True)
     with open("results/e5_flawed_equity.json", "w") as fh:
