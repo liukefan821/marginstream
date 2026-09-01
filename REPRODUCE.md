@@ -1382,8 +1382,10 @@ this file as history. The current set is `e1` through `e7`.
   and therefore incur arbitrary execution cost.
 - Section 6.1's blast-radius claim still needs replacing with an admission that
   the gateway is inside the trusted computing base.
-- `paper/` was written before any of this and still describes the mechanism as
-  it was three rounds ago.
+- `paper/` has been migrated onto the final mechanism in §2 to §7 and the four
+  figures. §1, §4, §8 and §9 still carry the withdrawn price-conditional
+  schedule and the withdrawn local-risk-reduction claim; the migration is
+  recorded section by section in the round below it.
 
 ### Independent reproduction (2026-09-01)
 
@@ -1403,3 +1405,59 @@ from, and §1.7's latency target is not what they support.
 
 The Part C column of E6 was labelled `loss` while Parts A and B were labelled
 `draw`. It is `draw` in both now; the figures did not change, only the header.
+
+## Authority binding round (2026-09-01)
+
+An external review ran the ordering point's interface directly: holding a valid
+`lease_id` issued for one account, it submitted under that id naming a different
+account and a fabricated holder, and got back `(True, "ok")`.
+
+`Sequencer.submit` checked the admission sequence and the fence and nothing else.
+It did not know which account a lease belonged to, did not verify the holder, and
+took the holder from the request body. A lease id was a bearer token. That
+falsified two sentences of §6.1: that a compromised gateway cannot use another
+account's or another holder's capacity.
+
+### What changed
+
+The ordering point now holds `lease_id -> (account, holder, kind)`, registered by
+the allocator at issuance because the allocator is the single issuer and the only
+component that knows the binding. The holder on a submission is resolved from an
+authenticated session and never read from the request. `submit` and
+`commit_basket` refuse `unknown_lease`, `wrong_account`, `wrong_holder`,
+`wrong_authority_kind` and `unauthenticated` before any sequence check runs.
+`kind` separates ingress leases from liquidation leases: an ingress holder that
+could commit a basket would be admitting with no ceiling at all.
+
+`open_session` stands in for a transport that has already identified the peer.
+What is implemented and tested is the binding check; the authentication itself is
+assumed, and §6.1 says so.
+
+Deliberately not added: expiry enforcement at the ordering point. It has no clock
+it can compare against an expiry set elsewhere. An honest gateway is bounded by
+its own term; a Byzantine one only by the fence. ADR-6 records that as the cost.
+
+    $ python3 tests/test_authority.py
+    [pass] t1 a valid lease id does not carry another account
+    [pass] t2 a lease cannot be used from another holder's session
+    [pass] t3 a fenced lease refuses even from its own holder's session
+    [pass] t4 an unregistered lease id is not authority
+    [pass] t5 the two authority kinds are not interchangeable
+    [pass] t6 a lease id cannot be rebound to another account or holder
+
+    6 of 6 properties hold
+
+### Regression after the change
+
+    test_account                14 of 14        test_liquidation    14 of 14
+    test_algebra                bound held      test_recovery        6 of 6
+    test_authority               6 of 6         test_repricing       6 of 6
+    test_counterexamples        16 of 16        test_worst_fill      6 of 6
+    test_execution_debit         7 of 7         test_worst_fill_exhaustive  equal
+    test_lifecycle_fuzz         no admission worsened any scenario
+
+    e1 e2 e3 e4 e5 e6 e7        all exit 0
+
+`e3_hot_path_benchmark.py` deliberately builds its allocator without a sequencer:
+it measures the gateway's local envelope arithmetic, which is the part on the hot
+path, and wiring an ordering point into it would measure something else.

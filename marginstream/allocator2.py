@@ -98,7 +98,7 @@ def _key(g):
 
 class Allocator:
     def __init__(self, risk, shape=(DECAY_DEN,), ttl=1, gross_per_risk=20,
-                 residual=0):
+                 residual=0, sequencer=None):
         """`gross_per_risk` fixes the ratio at which gross ceiling is issued
         alongside risk ceiling. The two resources are checked independently at
         the gateway, but they are not solved for independently: the solver
@@ -106,6 +106,10 @@ class Allocator:
         independent checks against a fixed-ratio issuance policy, not a
         two-resource allocation."""
         self.risk = risk
+        # the ordering point this allocator registers its leases with. It is
+        # the single issuer, so it is the only component that knows which
+        # account and which holder a lease was cut for.
+        self.sequencer = sequencer
         self.shape = tuple(shape)
         self.ttl = ttl
         self.gross_per_risk = gross_per_risk
@@ -454,6 +458,8 @@ class Allocator:
             lid = self._next_lease_id
             self._next_lease_id += 1
             self.all_leases.setdefault(account, set()).add(lid)
+            if self.sequencer is not None:
+                self.sequencer.register_lease(lid, account, h, "ingress")
             out[g] = Lease(account, self.epoch, gen, h[0], h[1],
                            now + self.ttl, mode, risk_curve, gross_curve,
                            debit_curve, lease_id=lid, credit_version=cv)
@@ -493,6 +499,9 @@ class Allocator:
                    lease_id=lid, credit_version=self.credit_version.get(account, 0))
         self.liquidation_leases.setdefault(account, []).append(lid)
         self.all_leases.setdefault(account, set()).add(lid)
+        if self.sequencer is not None:
+            self.sequencer.register_lease(lid, account, (gateway, incarnation),
+                                          "liquidation")
         return lz
 
     def advance_epoch(self):

@@ -39,7 +39,7 @@ def _venue(kappa=1, scale=10 ** 7, collateral=400_000, gross_per_risk=8,
             Symbol("B", 0, 1500, 150, 80, 7, 2)]
     risk = RiskModel(syms, addon_kappa=kappa, addon_scale=scale)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=ttl, gross_per_risk=gross_per_risk)
+    alloc = Allocator(risk, sequencer=seqr, ttl=ttl, gross_per_risk=gross_per_risk)
     gws = [Gateway(i, risk, sequencer=seqr) for i in range(n_gateways)]
     acct = Account(risk, collateral)
     leases, _scale = alloc.issue(ACC, acct.equity(),
@@ -149,7 +149,7 @@ def l3_one_leg_at_a_time_is_refused_on_a_hedged_book():
             Symbol("B", 0, 1000, 200, 100, 5, 2)]
     risk = RiskModel(syms, addon_kappa=1, addon_scale=10 ** 7)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=20)
+    alloc = Allocator(risk, sequencer=seqr, ttl=10 ** 6, gross_per_risk=20)
     gws = [Gateway(0, risk, sequencer=seqr), Gateway(1, risk, sequencer=seqr)]
     acct = Account(risk, 10 ** 6)
     leases, _ = alloc.issue(ACC, acct.equity(), {0: 1, 1: 1}, now=0)
@@ -277,13 +277,12 @@ def l7_a_replayed_basket_lands_once():
                    risk.symbols[s].fee_per_lot) for s, _q, _p, _f in legs)
     seq = seqr.last_seq.get(lid, 0) + 1
     again, why_again = execute_basket(seqr, liq_gw, acct, lid, seq, basket_id,
-                                      ACC, (99, 0), legs, terms)
+                                      ACC, legs, terms)
     after_retry = dict(acct.positions())
 
     tampered = tuple((s, q, p + 1, f) for s, q, p, f in legs)
     conflict, why_conflict = execute_basket(seqr, liq_gw, acct, lid, seq,
-                                            basket_id, ACC, (99, 0), tampered,
-                                            terms)
+                                            basket_id, ACC, tampered, terms)
     after_conflict = dict(acct.positions())
 
     return _report(

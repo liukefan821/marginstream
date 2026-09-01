@@ -180,7 +180,7 @@ stateDiagram-v2
     QUARANTINE --> FENCED
     STALE --> FENCED
 
-    FENCED --> UNWINDING: cancels acknowledged
+    FENCED --> UNWINDING: cancel phase complete<br/>unacknowledged orders keep<br/>their reservation
     UNWINDING --> SETTLING: position flat,<br/>liquidator fenced
     SETTLING --> NORMAL: barrier taken, occupancy<br/>rebuilt, issuance resumed
     SETTLING --> SETTLING: refused while any<br/>authority is live

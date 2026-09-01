@@ -34,7 +34,7 @@ def build(seed=1, steps=120):
             for i in range(4)]
     risk = RiskModel(syms, addon_kappa=1, addon_scale=10 ** 6)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=10 ** 4)
+    alloc = Allocator(risk, sequencer=seqr, ttl=10 ** 6, gross_per_risk=10 ** 4)
     gw = Gateway(0, risk, sequencer=seqr)
     leases, _ = alloc.issue(ACC, 10 ** 10, {0: 1}, now=0)
     gw.install_lease(leases[0])

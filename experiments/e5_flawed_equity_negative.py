@@ -29,7 +29,7 @@ def scripted(mode, fee=8_000, loss_per_lot=500):
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     collateral = 100_000
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=10 ** 6)
+    alloc = Allocator(risk, sequencer=seqr, ttl=10 ** 6, gross_per_risk=10 ** 6)
     gw = Gateway(0, risk, sequencer=seqr)
 
     book = Account(risk, collateral, mode=mode)
@@ -78,7 +78,7 @@ def binding_overstatement(delta):
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     collateral = 100_000
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=10 ** 6)
+    alloc = Allocator(risk, sequencer=seqr, ttl=10 ** 6, gross_per_risk=10 ** 6)
     gw = Gateway(0, risk, sequencer=seqr)
     truth = Account(risk, collateral)
 

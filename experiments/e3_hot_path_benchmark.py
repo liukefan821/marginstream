@@ -55,6 +55,8 @@ def timed(fn, reps, teardown=None):
 
 def bench(grid_name, grid, incremental, open_orders):
     syms, risk = build(grid)
+    # no ordering point here on purpose: this measures the gateway's local
+    # envelope arithmetic, which is the part that is on the hot path.
     alloc = Allocator(risk, ttl=10 ** 9, gross_per_risk=10 ** 6)
     gw = Gateway(0, risk, worst_fill=True, incremental=incremental)
     leases, _ = alloc.issue(ACC, 10 ** 12, {0: 1}, now=0)

@@ -53,6 +53,69 @@ class Sequencer:
         self.basket_log = {}        # (lease_id, seq) -> payload
         self.basket_by_id = {}      # basket_id -> payload
         self.barriers = {}          # account -> watermark of the last barrier
+        # Authority binding. A lease id on its own is a bearer token: knowing
+        # one was enough to submit under it, for any account and claiming any
+        # holder. The registry is what makes it a capability instead.
+        self.lease_registry = {}    # lease_id -> (account, holder, kind)
+        self.sessions = {}          # session token -> holder
+
+    # ---- authority binding -----------------------------------------------
+
+    def open_session(self, holder):
+        """Stand-in for an authenticated connection.
+
+        In a deployment the holder identity comes from the transport — a client
+        certificate, a mutual-TLS peer name — and never from the request body.
+        Here a component opens a session once and the ordering point resolves
+        the holder from it, ignoring anything the request claims. What this
+        models and tests is the *binding check*; the authentication itself is
+        assumed and is not implemented.
+        """
+        token = f"sess:{len(self.sessions) + 1}"
+        self.sessions[token] = tuple(holder)
+        return token
+
+    def register_lease(self, lease_id, account, holder, kind):
+        """Bind a lease to the account, holder and authority kind it was
+        issued for. The allocator is the only caller: it is the single issuer,
+        so it is the only component that knows the binding.
+
+        `kind` is `ingress` or `liquidation`. They are not interchangeable: an
+        ingress lease may carry orders and not basket transfers, and a
+        liquidation lease the other way round, because the liquidator's
+        admissions are checked against the merged account rather than against a
+        ceiling (§2.6).
+        """
+        prior = self.lease_registry.get(lease_id)
+        binding = (account, tuple(holder), kind)
+        if prior is not None and prior != binding:
+            return False, "lease_id_rebound"
+        self.lease_registry[lease_id] = binding
+        return True, "registered"
+
+    def _authorise(self, session, lease_id, account, kind):
+        """Return None if this submission is authorised, or a refusal reason.
+
+        Deliberately not checked here: the lease's term. The ordering point has
+        no clock it can compare against an expiry that was set by another
+        component, so an honest gateway is bounded by its own term and a
+        Byzantine one is bounded only by the fence. §6.1 says so rather than
+        claiming otherwise.
+        """
+        binding = self.lease_registry.get(lease_id)
+        if binding is None:
+            return "unknown_lease"
+        bound_account, bound_holder, bound_kind = binding
+        if bound_kind != kind:
+            return "wrong_authority_kind"
+        if account != bound_account:
+            return "wrong_account"
+        holder = self.sessions.get(session)
+        if holder is None:
+            return "unauthenticated"
+        if holder != bound_holder:
+            return "wrong_holder"
+        return None
 
     def position(self):
         return len(self.events)
@@ -62,8 +125,8 @@ class Sequencer:
         component can tell a repeat from a new fact."""
         return list(enumerate(self.events))[watermark:]
 
-    def submit(self, lease_id, admission_seq, order_id, account, symbol, qty,
-               holder=None, mark=None, band=0, fee_cap=0, policy=0):
+    def submit(self, session, lease_id, admission_seq, order_id, account,
+               symbol, qty, mark=None, band=0, fee_cap=0, policy=0):
         """Return (accepted, reason).
 
         The payload is recorded, so a reconciliation can be computed from this
@@ -71,6 +134,12 @@ class Sequencer:
         entry already accepted, carrying the same payload, succeeds again; the
         same number with a different payload is a conflict.
         """
+        refusal = self._authorise(session, lease_id, account, "ingress")
+        if refusal is not None:
+            self.rejected += 1
+            return False, refusal
+        holder = self.sessions[session]
+
         key = (lease_id, admission_seq)
         payload = (order_id, account, symbol, qty, holder)
         terms = (symbol, qty, mark, band, fee_cap, policy)
@@ -183,7 +252,7 @@ class Sequencer:
 
     # ---- atomic baskets --------------------------------------------------
 
-    def commit_basket(self, lease_id, seq, basket_id, account, holder, legs,
+    def commit_basket(self, session, lease_id, seq, basket_id, account, legs,
                       terms):
         """Commit a whole basket as one event, or nothing.
 
@@ -201,7 +270,13 @@ class Sequencer:
         with the same payload succeeds again and folds once; the same id with a
         different payload is a conflict.
         """
-        payload = (account, tuple(legs), tuple(holder) if holder else None)
+        refusal = self._authorise(session, lease_id, account, "liquidation")
+        if refusal is not None:
+            self.rejected += 1
+            return False, refusal
+        holder = self.sessions[session]
+
+        payload = (account, tuple(legs), holder)
         prior = self.basket_by_id.get(basket_id)
         if prior is not None:
             if prior == payload:
@@ -227,7 +302,7 @@ class Sequencer:
         self.basket_log[(lease_id, seq)] = payload
         self.basket_by_id[basket_id] = payload
         self.events.append(("basket", lease_id, seq, basket_id, account,
-                            tuple(holder) if holder else None, tuple(legs)))
+                            holder, tuple(legs)))
         return True, "ok"
 
     # ---- barrier ---------------------------------------------------------

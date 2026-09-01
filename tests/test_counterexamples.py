@@ -39,7 +39,8 @@ def c1_charge_bounds_global_requirement():
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
 
     # Two gateways, each holding one leg, each leased from one solve.
-    alloc = Allocator(risk, ttl=10)
+    seqr = Sequencer()
+    alloc = Allocator(risk, sequencer=seqr, ttl=10)
     g0 = Gateway(0, risk)
     g1 = Gateway(1, risk)
     leases, _ = alloc.issue(ACC, 100_000, {0: 1, 1: 1}, now=0)
@@ -77,7 +78,8 @@ def c2_charge_bounds_gross_notional():
     syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 0, 1000, 100, 100)]
     risk = RiskModel(syms, addon_kappa=1, addon_scale=1_000_000)
 
-    alloc = Allocator(risk, ttl=10, gross_per_risk=20)
+    seqr = Sequencer()
+    alloc = Allocator(risk, sequencer=seqr, ttl=10, gross_per_risk=20)
     gw = Gateway(0, risk)
     leases, _ = alloc.issue(ACC, 30_000, {0: 1}, now=0)
     gw.install_lease(leases[0])
@@ -126,7 +128,8 @@ def c4_generation_bump_revokes():
     """
     syms = [Symbol("A", 0, 1000, 100, 100)]
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
-    alloc = Allocator(risk, ttl=5)
+    seqr = Sequencer()
+    alloc = Allocator(risk, sequencer=seqr, ttl=5)
     gw = Gateway(0, risk, fencing=True)
 
     leases, _ = alloc.issue(ACC, 100_000, {0: 1}, now=0)
@@ -159,7 +162,8 @@ def c5_schedule_is_a_trigger_not_a_guarantee():
     """
     syms = [Symbol("A", 0, 1000, 100, 100)]
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
-    alloc = Allocator(risk, shape=(1000, 300), ttl=10)
+    seqr = Sequencer()
+    alloc = Allocator(risk, sequencer=seqr, shape=(1000, 300), ttl=10)
     gw = Gateway(0, risk, fencing=True)
     leases, _ = alloc.issue(ACC, 100_000, {0: 1}, now=0)
     gw.install_lease(leases[0])
@@ -196,7 +200,8 @@ def c6_no_capacity_reissued_over_a_live_lease():
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     collateral = 1_000
 
-    alloc = Allocator(risk, ttl=100)
+    seqr = Sequencer()
+    alloc = Allocator(risk, sequencer=seqr, ttl=100)
     old = Gateway(0, risk)
     leases, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
     old.install_lease(leases[0])
@@ -237,7 +242,8 @@ def c7_weight_migration_respects_existing_usage():
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     collateral = 1_000
 
-    alloc = Allocator(risk, ttl=100)
+    seqr = Sequencer()
+    alloc = Allocator(risk, sequencer=seqr, ttl=100)
     g0, g1 = Gateway(0, risk), Gateway(1, risk)
     leases, _ = alloc.issue(ACC, collateral, {0: 1, 1: 1}, now=0)
     g0.install_lease(leases[0]); g1.install_lease(leases[1])
@@ -303,7 +309,8 @@ def c8_expiry_does_not_release_exposure():
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     collateral = 1_000
 
-    alloc = Allocator(risk, ttl=100)
+    seqr = Sequencer()
+    alloc = Allocator(risk, sequencer=seqr, ttl=100)
     old = Gateway(0, risk)
     leases, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
     old.install_lease(leases[0])
@@ -343,7 +350,8 @@ def c9_infeasible_state_is_not_local_reduce_only():
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     collateral = 1_000
 
-    alloc = Allocator(risk, ttl=1000)
+    seqr = Sequencer()
+    alloc = Allocator(risk, sequencer=seqr, ttl=1000)
     g0, g1 = Gateway(0, risk), Gateway(1, risk)
     leases, _ = alloc.issue(ACC, 100_000, {0: 1, 1: 1}, now=0)
     g0.install_lease(leases[0]); g1.install_lease(leases[1])
@@ -381,7 +389,8 @@ def c10_incarnations_are_counted_separately():
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     collateral = 1_000
 
-    alloc = Allocator(risk, ttl=100)
+    seqr = Sequencer()
+    alloc = Allocator(risk, sequencer=seqr, ttl=100)
     first = Gateway(0, risk)
     l1, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
     first.install_lease(l1[0])
@@ -421,7 +430,8 @@ def c11_expired_but_unreconciled_holds_its_ceiling():
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     collateral = 1_000
 
-    alloc = Allocator(risk, ttl=100)
+    seqr = Sequencer()
+    alloc = Allocator(risk, sequencer=seqr, ttl=100)
     old = Gateway(0, risk)
     leases, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
     old.install_lease(leases[0])
@@ -461,7 +471,7 @@ def c12_release_requires_coverage_not_just_order():
     collateral = 1_000
 
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=100)
+    alloc = Allocator(risk, sequencer=seqr, ttl=100)
     old = Gateway(0, risk, sequencer=seqr)
     leases, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
     old.install_lease(leases[0])
@@ -495,7 +505,8 @@ def c13_retire_does_not_revoke_a_live_lease():
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     collateral = 1_000
 
-    alloc = Allocator(risk, ttl=1000)
+    seqr = Sequencer()
+    alloc = Allocator(risk, sequencer=seqr, ttl=1000)
     old = Gateway(0, risk)
     leases, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
     old.install_lease(leases[0])
@@ -535,7 +546,7 @@ def c14_release_is_refused_without_full_coverage():
     from marginstream.sequencer import Seal
 
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=100)
+    alloc = Allocator(risk, sequencer=seqr, ttl=100)
     old = Gateway(0, risk, sequencer=seqr)
     leases, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
     old.install_lease(leases[0])
@@ -574,7 +585,7 @@ def c15_a_seal_does_not_release_a_later_lease():
     collateral = 1_000
 
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=50)
+    alloc = Allocator(risk, sequencer=seqr, ttl=50)
     gw = Gateway(0, risk, sequencer=seqr)
 
     l1, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
@@ -618,7 +629,7 @@ def c16_conflicting_replay_is_refused():
     syms = [Symbol("A", 0, 1000, 100, 100)]
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=10)
+    alloc = Allocator(risk, sequencer=seqr, ttl=10)
     gw = Gateway(0, risk, sequencer=seqr)
     leases, _ = alloc.issue(ACC, 100_000, {0: 1}, now=0)
     gw.install_lease(leases[0])

@@ -99,64 +99,34 @@ counts and does not treat as a failure.
 
 ## 6.3 Business-logic abuse cases
 
-**Scope note.** A1 and A2 below were written against the price-conditional
-schedule, which ADR-2 withdraws. Under the current condition the admission check
-reads no market state at all, so A1 — replaying a stale, more favourable state to
-obtain capacity — no longer has a target on the admission path, and the ratchet
-that closed it is no longer load-bearing. A2 survives in weakened form: a
-suppressed mark still overstates equity, and an overstated equity still buys a
-ceiling the account cannot carry, which is the shape E5's misreported-equity
-control measures directly. The E4 and E5 figures quoted in A1 and A2 come from
-superseded experiments and are retained below as the record of what was argued,
-not as current evidence. Rewriting these two cases against the misreported-equity
-control is outstanding work, not something this section claims to have done.
+### A1 — Overstating equity
 
-### A1 — Replaying an older market state
+Every ceiling is solved against `E_0`. An account that reports more equity than
+it has buys a ceiling it cannot carry, and this is the abuse case the mechanism
+is most exposed to, because nothing downstream re-derives equity.
 
-The shard evaluates its schedule at the market state it reads. An account able
-to make a shard read a stale, more favourable state obtains capacity the current
-state does not permit.
+E5 measures it rather than arguing it. An account that forgets a realised loss
+reports 92,000 where it has 42,000, is issued a ceiling of 46,000 instead of
+21,000, admits 230 orders instead of 105, and ends 4,000 above equity. At the
+binding point the breach tracks the overstatement one for one: overstating by
+10,000 produces a breach of 10,000. **The factor of two is a closure, not a
+margin against a misreported account**, and an earlier draft that read it as a
+64% tolerance was reading unused workload slack.
 
-Mitigation: the shard evaluates its schedule at the most adverse state it has
-observed since the lease was installed, not at the state on the current message.
-A replayed lower state changes nothing.
+The exposure is to whatever can move `E_0`: a suppressed mark, a lost fee, a
+realised loss the ledger has not folded in. The defences are the exact
+cash-flow identity of §4, the account being a fold of the ordering point's log
+so it can be rebuilt independently, and multi-sourced marks. None of them is a
+proof, and the residual is that a compromised equity path is a compromised
+mechanism.
 
-Cost of the mitigation when the feed is honest: none. In E5 the ratcheted and
-unratcheted configurations are identical on an honest feed — 58 orders admitted,
-zero ticks with the requirement above equity. The defence only engages when the
-state goes backwards, which on an honest feed it does not.
+### A2 — A compromised gateway
 
-### A2 — Holding the published mark below the market
-
-An account able to suppress the published state, rather than replay an old one,
-is a different attack: the state never goes backwards, it simply fails to go
-forwards. The ratchet cannot see this, because there is nothing to ratchet
-against.
-
-E5 measures it. The published state is held at 0 between ticks 20 and 50 while
-the checker uses the true state:
-
-| Configuration | Suppressed | Admitted | Ticks above equity, of 480 |
-|---|---|---|---|
-| Scalar lease | no | 36 | 236 |
-| Scalar lease | yes | 36 | 236 |
-| Schedule, current state | no | 58 | 0 |
-| Schedule, current state | yes | 62 | 12 |
-| Schedule, ratcheted | no | 58 | 0 |
-| Schedule, ratcheted | yes | 49 | 5 |
-
-Three readings. The scalar lease is indifferent to the attack because it never
-reads the state — it is also above equity 236 ticks out of 480 for unrelated
-reasons (§7). The schedule closes that, and in doing so opens A2: suppression
-buys 4 extra admissions and 12 ticks of exposure. The ratchet reduces the
-exposure to 5 ticks and costs 9 admissions under attack.
-
-**This is a partial mitigation and we do not present it as more than that.** The
-residual belongs to the mark pipeline, not to the lease: multiple independent
-sources, a trimmed statistic across them, staleness detection on each source,
-and a bound on how far the published state may lag the sources. That pipeline is
-named in §2 and not designed in this document, which is a scope decision rather
-than an oversight.
+Covered in §6.1 rather than here, because it is a trust-boundary question and
+not a business-logic one. The short form: a compromised gateway cannot act under
+a fenced lease, cannot use another account's or another holder's lease, cannot
+fill outside the terms recorded at admission, and can admit orders its own
+ceilings do not cover until its term ends or it is fenced.
 
 ### A3 — Concentrating to escape the conservative split
 
@@ -220,7 +190,11 @@ running case. The schedule shape table and the state banding are versioned data
 on the same log, so a replay years later uses the parameters that were live then,
 not the current ones.
 
-**Orderly degradation.** The venue degrades to reduce-only rather than halting.
+**Orderly degradation.** The venue degrades by refusing new risk rather than by
+halting, and it retains the ability to unwind an account it can no longer margin
+(§5.4). It does not retain a client-facing close-only path under partition, and
+§3.3 says so; a supervisor asking whether clients can always exit should be told
+no rather than yes.
 The argument we would make to a supervisor is that a venue which blocks risk
 reduction during stress manufactures the disorderly market it is trying to
 prevent: clients unable to close are forced to hedge elsewhere or not at all, and

@@ -32,7 +32,7 @@ def execute_cancel(sequencer, gateway, account_name, order_id):
 
 
 def execute_basket(sequencer, gateway, account, lease_id, seq, basket_id,
-                   account_name, holder, legs, terms, after_commit=None):
+                   account_name, legs, terms, after_commit=None):
     """Commit a basket and then fold it. Same order as a fill: the ordering
     point decides, and only what it committed moves.
 
@@ -41,8 +41,8 @@ def execute_basket(sequencer, gateway, account, lease_id, seq, basket_id,
     locally. Recovery from the log reapplies it, and `applied_baskets` plus the
     ledger keys make the reapplication land once.
     """
-    ok, why = sequencer.commit_basket(lease_id, seq, basket_id, account_name,
-                                      holder, legs, terms)
+    ok, why = sequencer.commit_basket(gateway.session, lease_id, seq, basket_id,
+                                      account_name, legs, terms)
     if not ok:
         return False, why
     if after_commit is not None:

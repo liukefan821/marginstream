@@ -353,8 +353,7 @@ class Liquidation:
         seq = self.sequencer.last_seq.get(lid, 0) + 1
         ok, why = execute_basket(
             self.sequencer, self.liquidator, self.ledger, lid, seq, basket_id,
-            self.account, (self.liquidator.id, self.liquidator.incarnation),
-            tuple(legs), tuple(terms), after_commit=after_commit)
+            self.account, tuple(legs), tuple(terms), after_commit=after_commit)
         if not ok:
             self.reduce_refused += 1
             return None, why

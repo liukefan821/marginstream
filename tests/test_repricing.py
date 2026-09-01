@@ -48,7 +48,7 @@ def _binding_short_book(gross_per_risk, kappa=1, scale=10 ** 6,
     syms = [Symbol("A", 0, mark, 200, 100, band, cap)]
     risk = RiskModel(syms, addon_kappa=kappa, addon_scale=scale)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=gross_per_risk)
+    alloc = Allocator(risk, sequencer=seqr, ttl=10 ** 6, gross_per_risk=gross_per_risk)
     gw = Gateway(0, risk, sequencer=seqr)
     acct = Account(risk, collateral)
     leases, _ = alloc.issue(ACC, acct.equity(), {0: 1}, now=0)
@@ -159,7 +159,7 @@ def m3_the_condition_holds_at_the_binding_point_after_the_move():
         syms = [Symbol("A", 0, mark, 200, 100, band, cap)]
         risk = RiskModel(syms, addon_kappa=1, addon_scale=10 ** 5)
         seqr = Sequencer()
-        alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=6)
+        alloc = Allocator(risk, sequencer=seqr, ttl=10 ** 6, gross_per_risk=6)
         gw = Gateway(0, risk, sequencer=seqr)
         acct = Account(risk, 10 ** 6)
         leases, _ = alloc.issue(ACC, acct.equity(), {0: 1}, now=0)
@@ -267,7 +267,7 @@ def m5_a_reprice_leaves_the_cached_gross_correct():
                    band=6, fee_per_lot=1) for i in range(3)]
     risk = RiskModel(syms, addon_kappa=1, addon_scale=10 ** 6)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=10 ** 4)
+    alloc = Allocator(risk, sequencer=seqr, ttl=10 ** 6, gross_per_risk=10 ** 4)
     gw = Gateway(0, risk, sequencer=seqr)
     leases, _ = alloc.issue(ACC, 10 ** 10, {0: 1}, now=0)
     gw.install_lease(leases[0])

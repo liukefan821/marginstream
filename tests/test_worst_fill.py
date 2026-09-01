@@ -29,7 +29,7 @@ def w1_opposite_resting_orders_are_not_netted():
     syms = [Symbol("A", 0, 1000, 100, 100)]
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=100)
+    alloc = Allocator(risk, sequencer=seqr, ttl=100)
     gw = Gateway(0, risk, sequencer=seqr)
     leases, _ = alloc.issue(ACC, 100_000, {0: 1}, now=0)
     gw.install_lease(leases[0])
@@ -57,7 +57,7 @@ def w2_a_hedge_order_can_raise_reachable_gross():
     syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 0, 1000, 100, 100)]
     risk = RiskModel(syms, addon_kappa=1, addon_scale=1_000_000)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=100, gross_per_risk=20)
+    alloc = Allocator(risk, sequencer=seqr, ttl=100, gross_per_risk=20)
     gw = Gateway(0, risk, sequencer=seqr)
     leases, _ = alloc.issue(ACC, 200_000, {0: 1}, now=0)
     gw.install_lease(leases[0])
@@ -81,7 +81,7 @@ def w3_a_fill_does_not_raise_the_envelope():
     syms = [Symbol("A", 0, 1000, 100, 100), Symbol("B", 0, 900, 80, 120)]
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=100)
+    alloc = Allocator(risk, sequencer=seqr, ttl=100)
     gw = Gateway(0, risk, sequencer=seqr)
     leases, _ = alloc.issue(ACC, 500_000, {0: 1}, now=0)
     gw.install_lease(leases[0])
@@ -106,7 +106,7 @@ def w4_cancel_releases_only_on_acknowledgement():
     syms = [Symbol("A", 0, 1000, 100, 100)]
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=100)
+    alloc = Allocator(risk, sequencer=seqr, ttl=100)
     gw = Gateway(0, risk, sequencer=seqr)
     leases, _ = alloc.issue(ACC, 100_000, {0: 1}, now=0)
     gw.install_lease(leases[0])
@@ -128,12 +128,14 @@ def w4_cancel_releases_only_on_acknowledgement():
 
 def w5_retry_is_idempotent_conflict_is_refused():
     seqr = Sequencer()
-    ok1 = seqr.submit(7, 1, "o1", ACC, "A", 5)
-    ok2 = seqr.submit(7, 1, "o1", ACC, "A", 5)      # same payload
-    ok3 = seqr.submit(7, 1, "o1", ACC, "A", 6)      # same slot, different order
-    ok4 = seqr.submit(7, 3, "o3", ACC, "A", 5)      # gap
+    sess = seqr.open_session((0, 0))
+    seqr.register_lease(7, ACC, (0, 0), "ingress")
+    ok1 = seqr.submit(sess, 7, 1, "o1", ACC, "A", 5)
+    ok2 = seqr.submit(sess, 7, 1, "o1", ACC, "A", 5)   # same payload
+    ok3 = seqr.submit(sess, 7, 1, "o1", ACC, "A", 6)   # same slot, other order
+    ok4 = seqr.submit(sess, 7, 3, "o3", ACC, "A", 5)   # gap
     seqr.fence(7)
-    ok5 = seqr.submit(7, 2, "o2", ACC, "A", 5)      # after the fence
+    ok5 = seqr.submit(sess, 7, 2, "o2", ACC, "A", 5)   # after the fence
 
     return _report(
         "w5 the ordering point is idempotent on retry and strict otherwise",
@@ -148,7 +150,7 @@ def w6_fencing_does_not_remove_resting_orders():
     syms = [Symbol("A", 0, 1000, 100, 100)]
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=100)
+    alloc = Allocator(risk, sequencer=seqr, ttl=100)
     gw = Gateway(0, risk, sequencer=seqr)
     leases, _ = alloc.issue(ACC, 100_000, {0: 1}, now=0)
     gw.install_lease(leases[0])

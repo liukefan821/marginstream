@@ -198,7 +198,7 @@ def a14_the_account_is_a_fold_of_the_authoritative_log():
     rng = random.Random(11)
     risk = model()
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=10 ** 5)
+    alloc = Allocator(risk, sequencer=seqr, ttl=10 ** 6, gross_per_risk=10 ** 5)
     gw = Gateway(0, risk, sequencer=seqr)
     live = Account(risk, 400_000)
     leases, _ = alloc.issue("X", live.equity(), {0: 1}, now=0)

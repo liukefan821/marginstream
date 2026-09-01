@@ -23,7 +23,7 @@ def run(worst_fill):
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     collateral = 2_000
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=1000, gross_per_risk=10_000)
+    alloc = Allocator(risk, sequencer=seqr, ttl=1000, gross_per_risk=10_000)
     gw = Gateway(0, risk, sequencer=seqr, worst_fill=worst_fill)
     leases, _ = alloc.issue(ACC, collateral, {0: 1}, now=0)
     gw.install_lease(leases[0])

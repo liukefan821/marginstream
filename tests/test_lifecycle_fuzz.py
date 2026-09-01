@@ -102,7 +102,7 @@ def one_trial(seed, branches):
     ttl = rng.choice([rng.randrange(2, span), rng.randrange(span, 6 * span)])
 
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=ttl, gross_per_risk=rng.randrange(5, 60))
+    alloc = Allocator(risk, sequencer=seqr, ttl=ttl, gross_per_risk=rng.randrange(5, 60))
     pool = [(g, 0) for g in range(rng.randrange(1, 4))]
     gws = {h: Gateway(h[0], risk, incarnation=h[1], sequencer=seqr)
            for h in pool}

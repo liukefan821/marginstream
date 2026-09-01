@@ -195,8 +195,7 @@ def run(fault, seed=1):
             seq = r.seqr.last_seq.get(lid, 0) + 1
             position_before = dict(r.acct.positions())
             again, why = execute_basket(r.seqr, r.liq.liquidator, r.acct, lid,
-                                        seq, basket_id, ACC, (99, 0), legs,
-                                        terms)
+                                        seq, basket_id, ACC, legs, terms)
             if again and dict(r.acct.positions()) != position_before:
                 counters["duplicate_baskets_landed"] += 1
 

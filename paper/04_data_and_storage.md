@@ -57,7 +57,7 @@ The relationship between them is the solvency argument:
 
 The first inequality holds because a hold is only created for an admitted order
 and the admitted order consumed at least its own requirement. The second is
-arithmetic. The third is the schedule condition of §2.4. So
+arithmetic. The third is the safety condition of §2.4. So
 `sum of user holds <= sum of collateral` holds by construction, not by
 reconciliation — which is the property §6.4 offers a supervisor.
 

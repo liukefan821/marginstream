@@ -65,7 +65,7 @@ class Run:
                 Symbol("B", 0, 1500, 150, 80, 7, 2)]
         self.risk = RiskModel(syms, addon_kappa=1, addon_scale=10 ** 7)
         self.seqr = Sequencer()
-        self.alloc = Allocator(self.risk, ttl=10 ** 9,
+        self.alloc = Allocator(self.risk, sequencer=self.seqr, ttl=10 ** 9,
                                gross_per_risk=gross_per_risk)
         self.gws = [Gateway(i, self.risk, sequencer=self.seqr)
                     for i in range(2)]

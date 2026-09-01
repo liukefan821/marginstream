@@ -14,7 +14,7 @@ One row per data flow, with the model chosen and the reason it is survivable.
 | Lease issuance and generation transition | Single authoritative allocator per account, linearisable | Two issuers for one account could double-issue capacity against the same collateral. This is the one place the design cannot weaken |
 | End of authority | Fence at the ordering point, linearisable | A clock comparison is not evidence that a partitioned holder has stopped; a fence is, because nothing reaches a book except through that component. The fence does not need to be delivered to the holder |
 | Marks into the allocator | Bounded-stale | Marks set equity, the scenario displacements and `mark_plus`. Staleness costs capacity in both directions and does not cost safety inside the grid, because gross is reserved at the highest mark the grid reaches rather than at the mark the solve saw |
-| Position feed into the allocator | Bounded-stale, eventually consistent | Lag makes the ceiling stale in the safe direction: it reflects a smaller portfolio than exists, so the capacity solved for is smaller than the account could have supported |
+| Position feed into the allocator | Bounded-stale, eventually consistent | A fill the allocator has not seen was admitted under a lease and is still covered by that lease's absolute worst-fill, gross and debit ceilings. Until a terminal ordered reconciliation, the allocator neither releases that occupancy nor issues it to anyone else |
 | Holder occupancy | Over-approximated per holder while any holder is live; compacted from the log once none is | Per-holder figures are summed and do not net, which is necessary while an unreachable holder may still be acting. Once every lease for the account is fenced, the log is the whole truth and §5.4 replaces the sum with it |
 | Audit journal | Durable append-only, linearisable per shard | Replay must reproduce the decision exactly (§5.2), which fails if entries can be reordered |
 | Audit projections and dashboards | Eventually consistent | An operator reading a two-second-old capacity figure makes no decision the system will not re-check |
@@ -24,10 +24,15 @@ One row per data flow, with the model chosen and the reason it is survivable.
 Two rows are worth arguing rather than asserting.
 
 **The position feed.** A reviewer will ask whether a stale position feed can
-under-state the requirement and let too much through. It cannot: any position the
-allocator has not yet seen was admitted against a ceiling, so it is already
-inside the `2 * sum λ^R` term of §2.4. Lag costs capacity; it does not cost
-safety.
+under-state the requirement and let too much through. The answer is not that lag
+produces a smaller ceiling — that is neither the reason nor reliably true. The
+reason is that the ceilings are absolute rather than incremental and the
+accounting is monotone: a fill the allocator has not seen was admitted under some
+lease, is inside that lease's worst-fill, gross and debit ceilings by
+construction, and stays charged to that holder until a terminal ordered
+reconciliation replaces the ceiling with a measured figure. The allocator never
+treats an unseen fill as absent capacity, because it never releases a holder's
+occupancy on the strength of not having heard from it.
 
 **Holder occupancy.** The over-approximation is not conservatism for its own
 sake. While a holder can still admit, the allocator cannot see what it is doing,
@@ -80,15 +85,20 @@ it in the liquidator does, at the price of a component that is not bounded by th
 capacity accounting at all (§6.1). We would rather name that price than keep a
 sentence that reads better and is false.
 
-**Why a venue should still prefer this to halting everything.** A venue that
-blocks risk reduction during stress manufactures the disorderly market it is
-trying to prevent. The design does not block it; it relocates it. Clients close
-through the liquidation path rather than through their own gateway, which is
-worse for latency and better for correctness, and it keeps the venue's own
-unwind from competing with client unwinds on the same books — the liquidation
-basket is an internal transfer and does not touch the order books at all (§5.4).
-This is our argument, not a rule we are quoting; §6.4 says the same thing from
-the regulatory side.
+**What this does and does not preserve.** It has to be said precisely, because
+the comfortable version is false. When a term ends with no new issuance, *all*
+client order flow through that gateway stops, closing orders included. The
+liquidator is not a client-facing reduce-only API and this document does not
+contain one: it is a venue-initiated internal transfer that the venue decides to
+run. So what the design preserves during a partition is **the venue's ability to
+bound its own loss**, not the client's ability to close a position.
+
+A client-facing reduce-only path is possible and is not built. It would need the
+same account-level check the liquidator performs, which means a central
+component the gateway can reach; if that component is reachable the account is
+not partitioned in the way that matters, and if it is not, only venue-initiated
+liquidation remains. §6.4 argues from the regulatory side that a venue should
+want such a path; this design does not provide one.
 
 ## 3.4 Where the design refuses to weaken
 

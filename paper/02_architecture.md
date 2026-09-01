@@ -48,30 +48,56 @@ to a local counter, and we would say so rather than defend the complexity.
 
 Write the account's requirement as a scenario term plus an add-on term:
 
-    M(P) = R(P) + A(P)
-    R(P) = max over s in S of  sum over g of  loss_s(P_g)
-    A(P) = phi(|P|),  phi convex,  phi(0) = 0
+    M(P) = R(P) + A(G(P))
+    R(P) = max over k in S of  loss_k(P)
+    G(P) = sum over symbols s of  |q_s| * mark_plus(s)
+    A     = phi, convex, non-decreasing, phi(0) = 0
 
 `R` is the worst loss across a fixed scenario set, and the loss under any single
-scenario is linear in positions. `A` is a concentration and liquidity add-on,
-convex in gross notional. `|P|` is gross notional, which is additive across
-shards.
+scenario is linear in positions. `G` is gross notional, measured at the highest
+mark the grid reaches (§2.4). `A` is a concentration and liquidity add-on,
+convex and non-decreasing in gross.
 
-**Lemma 1 — R is sub-additive across shards.**
-`R(P) = max_s sum_g loss_s(P_g) <= sum_g max_s loss_s(P_g) = sum_g R(P_g)`,
-because a single scenario cannot beat the per-shard worst cases taken
+**The partition is by gateway, not by symbol.** That matters for what follows,
+and an earlier version of this section got it wrong: it partitioned by matching
+shard and treated gross as additive across the partition. It is not. Two
+gateways can hold opposite positions in the *same* symbol, and those net inside
+the account.
+
+**Lemma 1 — R is sub-additive across any partition.**
+`R(P) = max_k sum_g loss_k(P_g) <= sum_g max_k loss_k(P_g) = sum_g R(P_g)`,
+because a single scenario cannot beat the per-gateway worst cases taken
 separately.
 
-**Lemma 2 — A is super-additive across shards.**
-A convex function through the origin satisfies `phi(x + y) >= phi(x) + phi(y)`
-for non-negative arguments; with `|P|` additive, `A(P) >= sum_g A(P_g)`.
+**Lemma 2 — G is sub-additive across any partition.**
+Per symbol, `|sum_g q_{g,s}| <= sum_g |q_{g,s}|` by the triangle inequality;
+multiplying by `mark_plus(s) > 0` and summing over symbols gives
 
-The decomposition rule follows rather than being chosen: **the sub-additive part
-can be split into per-shard leases, the super-additive part provably cannot and
-is reserved centrally.** The algebra of the requirement determines what may be
-pushed to the edge.
+    G( sum_g P_g )  <=  sum_g G(P_g)
 
-Both lemmas are checked numerically over sampled portfolios in
+with equality only when every gateway holds the same sign in every symbol. So a
+per-gateway gross ceiling bounds the account's gross from above, which is the
+direction safety needs, and it gives that bound up whenever gateways hold
+offsetting legs in one symbol.
+
+**Lemma 3 — A does not decompose.**
+A convex function through the origin is super-additive on non-negative
+arguments, so `sum_g A(G_g) <= A(sum_g G_g)`. Handing each gateway its own
+add-on allowance and adding the allowances up therefore under-states the whole,
+however the positions are split.
+
+The decomposition rule follows from the three rather than being chosen:
+
+> The sub-additive parts can be divided into per-gateway ceilings and checked
+> locally. The add-on cannot be divided; it is evaluated once, centrally, on the
+> summed gross, and `A` being non-decreasing is what makes that central
+> evaluation an upper bound on the account's true add-on.
+
+Chained: `A(G(P')) <= A(sum_g G(P'_g)) <= A(sum_g λ_g^G)`, the first step by
+Lemma 2 with `A` non-decreasing, the second by the admission rule. Nothing in
+that chain needs gross to be additive.
+
+Lemmas 1 and 3 are checked numerically over sampled portfolios in
 `tests/test_algebra.py`; over 2,000 samples the largest observed gap was 27,929
 minor units for `R` and 142,052 for `A`, in the directions the lemmas predict.
 
@@ -93,12 +119,20 @@ three ceilings and checks all three independently:
 |---|---|---|
 | `λ_g^R` | the worst-fill scenario requirement of everything the gateway holds | sub-additive, so it divides |
 | `λ_g^G` | the worst-fill gross notional the gateway can reach | an order can lower `R` while raising gross, and `A` is a function of gross |
-| `λ_g^D` | the execution cost still ahead of the gateway: quantity times price band plus fee cap | bounded only because the band and the cap are venue policy; without a band there is no bound and no ceiling can be issued |
+| `λ_g^D` | the execution cost this gateway can still incur, plus whatever it has already incurred that the equity figure the current lease was solved against does not yet reflect | bounded only because the band and the cap are venue policy; without a band there is no bound and no ceiling can be issued |
 
-The gross ceiling is not a second allocation. `λ_g^G` is issued at a fixed ratio
-to `λ_g^R`, so the solver moves along one ray through a two-dimensional feasible
-set. Two independent checks against a fixed-ratio issuance policy is what this
-is, and calling it a two-resource allocator would overstate it.
+The three ceilings are not three allocations. `λ_g^G` and `λ_g^D` are issued at
+fixed ratios to `λ_g^R`, so the solver searches a single scalar and moves along
+one ray through a three-dimensional feasible set. Three independent checks
+against a fixed-ratio issuance policy is what this is, and calling it a
+multi-resource allocator would overstate it.
+
+`λ_g^D` covers two things and not one. A gateway's live orders will cost band
+plus fee when they fill, and that is ahead of it. A gateway's *filled* orders
+already cost it, and until a lease is issued against an equity figure that
+reflects those fills, the cost is behind the ceiling and still has to be
+reserved. Dropping the second half is what made capacity decay every term in an
+earlier implementation (`tests/test_execution_debit.py`, d7).
 
 ### What a gateway holds is orders, not positions
 
@@ -141,12 +175,41 @@ satisfying
 with `E_0 = Collateral + sum_s (cash_s + q_s * mark_s) - fees`, the account's
 mark-to-market equity, not its collateral.
 
-The factor of two is a closure, not a safety margin. Positions admitted during
-the term contribute both their own requirement and the loss they take at the
-realised scenario, and the second is bounded by the first because `R` is a
-maximum over a scenario set containing that scenario. Chaining Lemma 1, the
-admission rule and the condition gives `M(P') <= E(k)` at every scenario `k` in
-the grid, where `E(k) = E_0 - loss(P', k)`.
+**The closure.** Write `P'` for the position the account ends the term with, `D`
+for the execution cost the term actually incurred, and `k` for the scenario the
+market realises. Four bounds hold, the first three by the admission rule and the
+fourth because `R` is a maximum over a set containing `k`:
+
+    R(P')      <=  sum_g λ_g^R
+    G(P')      <=  sum_g λ_g^G        (Lemma 2, then A non-decreasing)
+    D          <=  sum_g λ_g^D
+    loss_k(P') <=  R(P')
+
+Adding the requirement, the cost and the realised loss together:
+
+    M_k(P') + D + loss_k(P')
+        <=  2 * sum_g λ_g^R  +  A( sum_g λ_g^G )  +  sum_g λ_g^D
+        <=  E_0
+
+and the equity the account actually has after the term is
+`Equity_after(k) = E_0 - D - loss_k(P')`, so
+
+    M_k(P')  <=  E_0 - D - loss_k(P')  =  Equity_after(k)
+
+**Subtracting `D` is the whole reason the third resource exists.** An earlier
+version of this section concluded `M <= E_0 - loss` and left execution cost out
+of the arithmetic while still listing `λ^D` as a ceiling, which made the third
+envelope look like belt-and-braces rather than a term in the inequality.
+
+The factor of two is a closure, not a safety margin, and it is tight. Set
+`A = D = 0` and take a position whose requirement fills the ceiling exactly,
+`R(P') = λ^R`, with the realised scenario being the one that attains the
+maximum, so `loss_k(P') = R(P')`. Then `M_k = λ^R` and
+`Equity_after(k) = E_0 - λ^R`, and the two are equal precisely when
+`E_0 = 2λ^R`. With any coefficient `c < 2` the solve issues `λ^R = E_0 / c`,
+which is larger, and the same position ends with
+`M_k = E_0/c > E_0 - E_0/c = Equity_after(k)`. The coefficient cannot be reduced
+without giving up the guarantee.
 
 **There is no market state in the condition.** An earlier version of this
 document issued capacity as a schedule contracting with a published state index

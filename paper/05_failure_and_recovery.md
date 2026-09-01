@@ -62,61 +62,32 @@ derivation is not deterministic. Applying it here removes 24 MB/s from the log.
 
 ## 5.3 The idempotency chain
 
-End to end, for one client order. Every link is a named identifier and a
-decision point that has been tested rather than argued.
+Every link is a named identifier and a decision point that has been tested. The
+full nine-step chain is in Appendix C; the shape is:
 
-1. **The client** assigns a client order ID and retries with the same ID on
-   timeout. A timeout is an unknown outcome, not a failure.
-2. **The gateway** checks its three envelopes and, if they hold, submits to the
-   ordering point under `(lease_id, admission_seq)` where `admission_seq` is the
-   next number it has used under that lease.
-3. **The ordering point** accepts that pair only if it is the next number for
-   the lease, and only if the lease is not fenced. A retry carrying the same
-   payload under the same pair succeeds again and records once; the same pair
-   with a different payload is a conflict and records nothing. The gap-free
-   sequence is what later lets a seal claim to cover every admission the lease
-   produced.
-4. **A fill** is submitted under a `fill_id` against an `order_id`. The ordering
-   point refuses it — writing nothing and moving nothing — if the identifier has
-   been used with different figures, the order is unknown or cancelled, the
-   direction disagrees, the cumulative quantity would exceed what was admitted,
-   the price falls outside the band recorded at admission, or the fee exceeds the
-   cap for that quantity. A retry with the same figures lands once
-   (`tests/test_execution_debit.py`, d4 to d6).
-5. **The order of operations is fixed**: the ordering point decides first, and
-   only a fill it accepted is folded into the gateway and the account. An earlier
-   implementation called the gateway first, which moved state the authority then
-   refused.
-6. **A liquidation basket** is committed under a `basket_id` as a single record.
-   A retry with the same payload is idempotent; the same identifier with
-   different figures is refused and moves nothing (`tests/test_liquidation.py`,
-   l7). A process that dies between the commit landing in the log and the
-   transfer being folded in locally rebuilds from the log, and `applied_baskets`
-   plus the ledger's fill keys make the reapplication land once (l14).
-7. **Replay is idempotent by log position.** An earlier version relied on the
-   order ID for that, which covers admissions and not fills or cancels, and
-   replaying the same slice twice applied the fills twice
-   (`tests/test_recovery.py`, r2).
-8. **The matching shard** applies a given client order ID at most once, so no
-   duplicate book action occurs regardless of how many times the order was
-   admitted upstream.
-9. **Clearing** derives ledger entry IDs deterministically from the trade
-   sequence, so a replayed trade produces the same entry ID and is deduplicated
-   (running case, Part 3 §4).
+- **the client** retries on the same client order ID, because a timeout is an
+  unknown outcome and not a failure;
+- **the gateway** submits under `(lease_id, admission_seq)`, and the ordering
+  point takes only the next number for that lease, so the recorded sequence is
+  gap-free — which is what later lets a seal claim to cover every admission;
+- **the ordering point decides first.** Only a fill it accepted is folded into
+  the gateway and the account. An earlier implementation called the gateway
+  first and moved state the authority then refused;
+- **a fill** is refused, writing nothing and moving nothing, on a reused
+  identifier with different figures, an unknown or cancelled order, the wrong
+  direction, an over-fill, a price outside the band recorded at admission, or a
+  fee above the cap;
+- **a basket** is one record under one identifier, idempotent on retry and
+  refused on a conflicting payload;
+- **replay is idempotent by log position**, not by order ID — which covers
+  admissions and not fills or cancels, and r2 caught that;
+- **the matching shard** applies a client order ID at most once.
 
-Step 2 is where this design differs from the running case, and it is a cost we
-state rather than hide: a retry routed through another gateway is a new admission
-attempt at that gateway and may conservatively consume envelope there, though it
-cannot produce a duplicate book action. That consumption is released at the next
-issuance.
-
-One asymmetry is deliberate and matters later. A cancel *request* releases
-nothing; only an acknowledgement recorded at the ordering point does, because
-until then the order can still fill. That produces two different failures which
-are not the same fact and are tested separately (§5.4).
-
-Exactly-once is, as in the running case, end-to-end idempotency layered on
-at-least-once delivery. Nothing in the margin path changes that.
+Two costs stated rather than hidden. A retry routed through another gateway is a
+new admission attempt there and may consume envelope, released at the next
+issuance. And a cancel *request* releases nothing; only an acknowledgement
+recorded at the ordering point does, which produces the two failures §5.4 keeps
+apart.
 
 ## 5.4 Fencing, liquidation and settlement
 
@@ -201,22 +172,13 @@ The rule, stated so the two are not confused:
 > A seal releases one lease. A globally fenced, ordered account barrier permits
 > account-wide compaction.
 
-Compaction requires all of the following, and none of them is supplied by the
-caller:
-
-1. the account is in `settling`, so no new lease can be issued for it;
-2. every lease ever minted for the account is fenced at the ordering point —
-   every ingress lease, every incarnation, and the liquidator's own basket
-   authority. A lease that admitted nothing is still authority;
-3. a barrier watermark `B` at which the recorded sequence under each of those
-   leases is gap-free and no admission or basket for the account was recorded
-   under a lease outside the set;
-4. the aggregate rebuilt from the log at `B`: filled positions, orders with no
-   authoritative cancel acknowledgement, worst-fill risk, repriced gross reach,
-   and the execution cost still ahead of the account;
-5. installation under a credit-version compare-and-set, so a settlement computed
-   at an older barrier cannot overwrite a newer one;
-6. issuance resumes only after the install.
+Compaction requires six conditions, none of them supplied by the caller:
+issuance stopped for the account; every lease it ever held fenced, including
+every incarnation and the liquidator's own basket authority; a barrier watermark
+at which the recorded sequence is gap-free and no admission was made under an
+unregistered lease; the occupancy rebuilt from the log at that watermark; a
+credit-version compare-and-set on the install; and issuance resumed only after
+it. Appendix C states them in full.
 
 E7 exercises the refusals as well as the successes: `no_fence` is refused with
 two ingress leases live, and `liquidator_authority_live` is refused with the
@@ -233,7 +195,9 @@ no tolerance:
 Across the delay sweep, execution cost runs from 2,522 to 6,486 while drift runs
 from 16,444 to 229,708. **The two things the mechanism controls — new admissions,
 and the execution cost of unwinding what is there — are bounded. Market drift is
-not, and it is linear in the delay.** The unwind's cost sits inside the bound
+not.** In E6 it grows linearly with the delay, but that is a property of the
+constant-rate price path the experiment uses, not a result: on any other path the
+statement is only that nothing in the mechanism bounds it. The unwind's cost sits inside the bound
 taken over the reachable position at the moment authority ends, and outside any
 bound taken at the moment the shortfall was detected, because everything admitted
 during the detection delay is inside the first and outside the second. In the

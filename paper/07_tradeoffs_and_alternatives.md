@@ -28,9 +28,10 @@ Rejected against the rule that a balance never goes negative. A venue that must
 prove assets ≥ liabilities at any instant cannot have a window in which the
 proof is pending.
 
-**What the decision costs.** Local pricing gives no credit for offsets on other
-shards, so every charge is conservative and the account is charged more than its
-true risk. §6.3 A3 records the incentive distortion this creates.
+**What the decision costs.** A gateway compares absolute figures against its own
+ceilings and gets no credit for offsets held elsewhere, so the account is charged
+more than its true risk by exactly the sub-additivity gap of §2.3. §6.3 A3
+records the incentive distortion this creates.
 
 ## ADR-2 — Scalar lease per term, or a schedule over market states
 
@@ -118,10 +119,10 @@ answered by the utilisation figures of §2.4 rather than by a curve shape.
 
 ## ADR-4 — What goes on the replicated log
 
-**Decision.** The schedule inputs — scale, weights, shape identifier — one
-record per changed account per epoch. Each shard derives its own lease.
+**Decision.** The lease inputs — scale and weights — one record per changed
+account per issuance. Each gateway derives its own three ceilings.
 
-**Alternative — log the per-shard leases directly.**
+**Alternative — log the per-gateway ceilings directly.**
 Rejected on bandwidth: ≈ 5 × 10⁵ records per second at ≈ 64 bytes is 32 MB/s,
 against an order command stream of 12.8 MB/s. Logging the inputs instead is
 ≈ 8 MB/s. Two and a half times the order traffic to carry a derived value did
@@ -145,31 +146,52 @@ operations per second at a 100 ms epoch does not fit a core.
 
 **Alternative — partition by symbol, matching the matching core.** Rejected
 because margin is an account-level quantity; a symbol-partitioned allocator
-would have to combine partial views to produce one account's schedule, which
+would have to combine partial views to produce one account's ceilings, which
 reintroduces the coordination the design exists to avoid.
 
 The accepted answer works because there is no invariant spanning two accounts,
 which is the property that makes the two partitionings orthogonal.
 
-## ADR-6 — Fencing rule
+## ADR-6 — What ends a holder's authority
 
-**Decision.** A gateway that has observed a generation higher than the one its
-schedule was issued under refuses to serve.
+**Decision.** A fence at the ordering point, with the lease term as the fallback
+for holders the ordering point is not being asked about.
 
-**Alternative — compare the order's generation with the schedule's and refuse on
-mismatch.** This was the first implementation and it is wrong: a stale gateway
-and a stale order agree with each other, so the gateway keeps spending an
-allowance that has been replaced. E2's scripted case shows the requirement
-reaching 10,047 against 10,000 of equity. The error and its correction are in
-`REPRODUCE.md`.
+**Alternative A — compare the order's generation with the lease's and refuse on
+mismatch.** The first implementation, and wrong: a stale gateway and a stale
+order agree with each other, so the gateway keeps spending an allowance that has
+been replaced. Corrected to "a gateway that has seen a higher generation refuses
+to serve", which is necessary and still not sufficient.
+
+**Alternative B — the allocator compares its own clock against the lease
+expiry.** Rejected on c11 and the fifth review round. A partitioned gateway's
+clock may be behind, so the allocator concluding that a term has ended concludes
+nothing about whether the holder has stopped. A fence does establish it, because
+nothing reaches a book except through the ordering point.
+
+**Alternative C — the holder reports that it has stopped.** Rejected because it
+is the interface defect that kept recurring: a correct seal paired with an
+optimistic usage claim was accepted until `release` was changed to compute the
+figure from the log itself, and the same mistake reappeared in the first version
+of the account barrier.
+
+**What the decision costs.** The ordering point has no clock it can compare
+against an expiry set elsewhere, so it does not enforce terms. An honest gateway
+is bounded by its own term; a Byzantine one is bounded only by the fence. §6.1
+states that rather than claiming the term is enforced.
 
 ## What we deliberately did not build
 
 - **A liquidation waterfall.** Partial liquidation, insurance-fund draw and
   auto-deleveraging are named and not designed. The design provides the trigger
   and the fencing around it; who absorbs a shortfall is a separate document.
-- **The mark-price pipeline.** Named in §2.6, required by §6.3 A2, not designed.
-  We would not claim the venue's capacity control is sound without it.
+- **The mark-price pipeline.** Named in §2.6 and required by §6.3 A1, not
+  designed. Marks set equity, and every ceiling is solved against equity, so we
+  would not claim the venue's capacity control is sound without it.
+- **A client-facing reduce-only path.** §3.3 explains why the design does not
+  have one and what that costs during a partition.
+- **Replication of the ordering point, and allocator failover.** Appendix B
+  draws the target deployment and labels it unbuilt.
 - **A matching engine.** Taken from the running case and cited.
 - **Anything that identifies the agent behind an order,** or tries to separate
   harmful from legitimate synchrony. The mechanism is capacity control, not

@@ -86,6 +86,10 @@ class Gateway:
         self.log_high_water = 0
         # baskets already folded, so a retry of the same transfer lands once
         self.applied_baskets = set()
+        # the authenticated identity the ordering point resolves this
+        # component's submissions under. Never sent in a request body.
+        self.session = (sequencer.open_session((gateway_id, incarnation))
+                        if sequencer is not None else None)
 
     # ---- state helpers ---------------------------------------------------
 
@@ -254,9 +258,8 @@ class Gateway:
             oid = order_id if order_id is not None else f"{lid}:{nxt}"
             sym = self.risk.symbols[symbol]
             ok, why = self.sequencer.submit(
-                lid, nxt, oid, account, symbol, qty,
-                holder=(self.id, self.incarnation), mark=sym.mark,
-                band=sym.band, fee_cap=sym.fee_per_lot)
+                self.session, lid, nxt, oid, account, symbol, qty,
+                mark=sym.mark, band=sym.band, fee_cap=sym.fee_per_lot)
             if not ok:
                 return False, why
             self.admission_seq[lid] = nxt
@@ -529,6 +532,7 @@ class Gateway:
             return False, "snapshot_ahead_of_log"
 
         self.sequencer = sequencer
+        self.session = sequencer.open_session((self.id, self.incarnation))
         self.state = {}
         self.log_high_water = wm
         self.admission_seq = dict(snapshot.get("admission_seq", {}))

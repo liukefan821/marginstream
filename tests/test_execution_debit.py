@@ -41,7 +41,7 @@ def _drive(fee_per_lot, slip, band=None, fee_cap=None):
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     collateral = 100_000
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=10 ** 6)
+    alloc = Allocator(risk, sequencer=seqr, ttl=10 ** 6, gross_per_risk=10 ** 6)
     gw = Gateway(0, risk, sequencer=seqr)
     acct = Account(risk, collateral)
 
@@ -135,7 +135,7 @@ def d6_a_repeated_fill_counts_once():
     syms = [Symbol("A", 0, 1000, 200, 100, 5, 2)]
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=10 ** 6)
+    alloc = Allocator(risk, sequencer=seqr, ttl=10 ** 6, gross_per_risk=10 ** 6)
     gw = Gateway(0, risk, sequencer=seqr)
     acct = Account(risk, 100_000)
     leases, _ = alloc.issue(ACC, acct.equity(), {0: 1}, now=0)
@@ -161,7 +161,7 @@ def d7_historical_execution_cost_is_not_reserved_twice():
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     from marginstream.execution import execute_fill
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=5, gross_per_risk=10 ** 6)
+    alloc = Allocator(risk, sequencer=seqr, ttl=5, gross_per_risk=10 ** 6)
     gw = Gateway(0, risk, sequencer=seqr)
     # a small account so the execution-cost envelope is the binding one
     acct = Account(risk, 3_000)

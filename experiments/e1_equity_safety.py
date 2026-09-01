@@ -51,7 +51,7 @@ def run_trial(seed, stats, account_mode="exact"):
     risk = RiskModel(syms, addon_kappa=rng.randrange(1, 3),
                      addon_scale=10 ** 7)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=rng.randrange(8, 40))
+    alloc = Allocator(risk, sequencer=seqr, ttl=10 ** 6, gross_per_risk=rng.randrange(8, 40))
     gw = Gateway(0, risk, sequencer=seqr)
 
     collateral = rng.randrange(200_000, 3_000_000)
@@ -153,7 +153,7 @@ def binding_trial():
     syms = [Symbol("A", 0, mark, 200, 100, band, cap)]
     risk = RiskModel(syms, addon_kappa=0, addon_scale=1)
     seqr = Sequencer()
-    alloc = Allocator(risk, ttl=10 ** 6, gross_per_risk=10 ** 6)
+    alloc = Allocator(risk, sequencer=seqr, ttl=10 ** 6, gross_per_risk=10 ** 6)
     gw = Gateway(0, risk, sequencer=seqr)
     acct = Account(risk, 100_000)
     leases, _ = alloc.issue(ACC, acct.equity(), {0: 1}, now=0)
