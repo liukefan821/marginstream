@@ -4,111 +4,100 @@
 
 | Store | Access pattern | Engine | Why not the obvious alternative |
 |---|---|---|---|
-| Order books | Read and mutate the top few ticks at 100k/s; cancel by ID must be O(1) | In-memory: contiguous price-level array keyed by `(price - base) / tick`, FIFO list per level, open-addressing index by order ID | A tree of queues costs a cache miss per hop; at a 100 µs budget the misses are the budget. Running case, Part 2 §2 |
-| Per-scenario loss vectors | Read and update 16 int64 per order, per (account, shard) | In-memory flat array, 128 B per pair, ≈ 64 MB resident | A portfolio revaluation call per order is the margin-path equivalent of pointer-chasing at the top of book |
-| Account positions and collateral | Read once per epoch per account by the allocator; written on every fill | In-memory in the allocator shard, snapshotted | A row store would serialise the hot accounts, which are exactly the market makers |
-| Replicated log | Sequential append at ≈ 21 MB/s, read only on replay | Append-only segments on NVMe | Nothing here is ever updated in place, which is the LSM-friendly case |
-| Journal and ledger entries | Sequential append; range scans on replay and reconciliation | Append-only segments, retained for years | Same argument |
-| Balances | Fold of the journal, materialised, read on every risk check | In-memory hash, snapshotted with the journal offset | Balances as the source of truth is the anti-pattern in the running case, Part 3 §7 |
-| Historical queries — balance of account at time T | Rare, analytical, wide scans | Columnar store fed from the journal by change data capture | Serving these from the hot path would put an analytical workload behind the same lock as trading |
-| Schedule shape tables and state bandings | Read on every derivation and on every replay | Versioned data on the log itself (§5.6) | Configuration would make replay non-deterministic, since a replayed decision would use today's table |
+| Order books | Mutate the top ticks at 100k/s; cancel by ID O(1) | In-memory price-level array, FIFO per level, index by order ID | A tree of queues costs a cache miss per hop; at 100 µs the misses are the budget |
+| Scenario vectors and gross totals | Update per order, per (account, gateway) | Flat array, ≈ 128 B per pair, ≈ 64 MB resident | A revaluation per order is pointer-chasing at the top of book |
+| Account positions and equity | Read per issuance; written on every fill | In-memory in the allocator shard, snapshotted | A row store serialises the hot accounts, which are the market makers |
+| Replicated log; journal and ledger entries | Sequential append at ≈ 21 MB/s (§2.7); read on replay | Append-only segments on NVMe | Nothing is updated in place |
+| Balances | Fold of the journal, materialised | In-memory hash, snapshotted with the journal offset | Balances as source of truth is the anti-pattern in the running case, Part 3 §7 |
+| Historical balance-at-time-T | Rare, analytical, wide scans | Columnar store fed by change data capture | This would put an analytical workload behind the trading lock |
+| Scenario grid, add-on parameters, gateway weights, band and fee policy, credit version, authority bindings | Read on every derivation and every replay | Versioned data on the log, activated at a sequence | As configuration they make replay non-deterministic: a replayed decision would use today's values |
 
-The last row is the one specific to this design and is easy to get wrong. The
-shape table looks like configuration — it is a small array of multipliers an
-operator would want to tune — and it is not, because a shard derives its lease
-from it and a replay must reproduce that lease.
+The last row is the one specific to this design. Those values look like
+configuration an operator would want to tune, and they are not, because a gateway
+derives its ceilings and its refusals from them and a replay must reproduce both.
 
 ## 4.2 Accounting model
 
-Double-entry, with the conservation invariant enforced at write time: every
-journal entry's postings sum to zero per asset, so value is moved by code and
-never created.
+Double-entry, with conservation enforced at write time: every journal entry's
+postings sum to zero per asset, so value is moved by code and never created.
+Accounts are keyed `(ownerId, assetId, accountType)` over `USER_AVAILABLE`,
+`USER_MARGIN_HOLD`, `USER_UNREALISED`, `EXCHANGE_FEE`, `INSURANCE_FUND`,
+`EXCHANGE_HOT`, `EXCHANGE_COLD` and `SUSPENSE`.
 
-Account types for a margin venue:
-
-    Account := (ownerId, assetId, accountType)
-
-    USER_AVAILABLE     collateral the client can withdraw or use
-    USER_MARGIN_HOLD   collateral encumbered by open positions
-    USER_UNREALISED    mark-to-market on open positions, per settlement cycle
-    EXCHANGE_FEE       fee revenue
-    INSURANCE_FUND     venue-level buffer for liquidation shortfall
-    EXCHANGE_HOT       on-chain hot wallet mirror
-    EXCHANGE_COLD      cold storage mirror
-    SUSPENSE           in-flight deposits and withdrawals
-
-Amounts are signed 64-bit integers in minimal units, with 128-bit intermediates.
-No floats anywhere, for the reason the running case gives: they break
-determinism, and determinism is what makes replicas agree and replays
+Amounts are signed 64-bit integers in minimal units with 128-bit intermediates.
+No floats: they break determinism, which is what makes replicas agree and replays
 reproducible.
 
-## 4.3 The distinction the whole design rests on
+## 4.3 Leases, holds, and what actually follows
 
-**A lease is an authorisation. A hold is a posting.**
+**A lease is an authorisation. A hold is a posting.** A lease never appears in
+the ledger: it is capacity to create holds, issued by the allocator, consumed by
+a gateway, ending with its term. A hold is a posting moving collateral from
+`USER_AVAILABLE` to `USER_MARGIN_HOLD` when a position opens. Conflating the two
+words is how an authorisation becomes spendable, so the document and the code
+keep them apart.
 
-A lease never appears in the ledger. It is capacity to create holds, issued by
-the allocator, consumed by a gateway, and expiring with its epoch. A hold is a
-double-entry posting that moves collateral from `USER_AVAILABLE` to
-`USER_MARGIN_HOLD` when a position is opened.
+An earlier version chained them into
+`sum holds <= sum consumed leases <= sum issued leases <= collateral`. That is
+withdrawn and does not hold: orders are checked against absolute worst-fill
+envelopes rather than each consuming an additive quantity, so "consumed leases"
+is not a sum, and a scenario requirement, a gross notional and an execution cost
+are not commensurable and do not compose into a ledger amount.
 
-The relationship between them is the solvency argument:
+What does hold is three facts that meet at the account:
 
-    sum of holds  <=  sum of consumed leases  <=  sum of issued leases  <=  collateral
+1. **Every posting sums to zero per asset**, enforced at write time, so the
+   journal cannot create value.
+2. **An account's equity is a cash-flow fold of the authoritative log** —
+   collateral plus cash and mark-to-market per symbol, less fees — and is
+   rebuildable from it independently of any live component (a14).
+3. **The admission theorem of §2.4** guarantees that the account's requirement
+   does not exceed *that* equity after any move the scenario grid covers.
 
-The first inequality holds because a hold is only created for an admitted order
-and the admitted order consumed at least its own requirement. The second is
-arithmetic. The third is the safety condition of §2.4. So
-`sum of user holds <= sum of collateral` holds by construction, not by
-reconciliation — which is the property §6.4 offers a supervisor.
-
-Conflating the two words is how an authorisation becomes spendable, so the
-document keeps them separate throughout and the code keeps them in separate
-modules.
+They do not compose into a proof that venue assets exceed liabilities: that would
+additionally need the ledger implemented, the insurance fund sized, and moves
+outside the grid accounted for.
 
 ## 4.4 The order lifecycle as journal entries
 
 | Event | Postings |
 |---|---|
-| Order admitted | None. Admission consumes a lease, which is not money |
-| Position opened by a fill | `USER_AVAILABLE -x` / `USER_MARGIN_HOLD +x` for the initial requirement; fee posted to `EXCHANGE_FEE` |
-| Mark-to-market settlement | `USER_UNREALISED` adjusted against the counterparty side; sums to zero across the two sides plus fee |
-| Position reduced | `USER_MARGIN_HOLD -x` / `USER_AVAILABLE +x` for the released requirement |
-| Liquidation | Same as a reduction, plus any shortfall drawn from `INSURANCE_FUND` |
-| Withdrawal requested | `USER_AVAILABLE -x` / `SUSPENSE +x`, after the generation bump of §6.2 |
+| Order admitted | None. Admission consumes envelope, which is not money |
+| Position opened by a fill | `USER_AVAILABLE -x` / `USER_MARGIN_HOLD +x`; fee to `EXCHANGE_FEE` |
+| Mark-to-market | `USER_UNREALISED` adjusted against the counterparty; sums to zero across both plus fee |
+| Position reduced | `USER_MARGIN_HOLD -x` / `USER_AVAILABLE +x` |
+| Liquidation basket | Same as a reduction. The transfer's counterparty is the venue (§5.4), and any shortfall draws `INSURANCE_FUND` |
+| Withdrawal requested | `USER_AVAILABLE -x` / `SUSPENSE +x`, after the sequence in §6.2 |
 | Withdrawal confirmed | `SUSPENSE -x` / `EXCHANGE_HOT -x` |
 
-The row worth noticing is the first. Admission moves nothing. That is what
-allows admission to run at gateway speed without touching the ledger, and it is
-also why the lease bound has to be sound: it is the only thing standing between
-an admitted order and an over-committed balance.
+The first row is the one that matters: admission moves nothing, which is what
+lets it run at gateway speed without touching the ledger, and why the envelope
+bound has to be sound — it is the only thing between an admitted order and an
+over-committed balance.
 
-## 4.5 Write path and idempotency
+A withdrawal reduces equity, so capacity outstanding against the old figure has
+to stop before funds leave: **fence, reconcile, re-issue against the reduced
+equity, release**. Bumping the generation is not sufficient, because a
+partitioned gateway keeps admitting inside its term regardless. §6.2 gives the
+slower alternative that waits for the term instead.
 
-Entry IDs are derived deterministically from the upstream event — a hash of the
-trade sequence and the leg index — so a replayed trade produces the same entry
-ID and is deduplicated. Assert-then-apply is atomic with respect to the account
-set touched, and the ledger is itself a single-writer partition per asset class,
-the same pattern as the matching engine.
+## 4.5 Write path, idempotency and reconciliation
 
-Negative balance is a write-time assertion, not a downstream check.
+Entry IDs are derived from the upstream event — a hash of the trade sequence and
+leg index — so a replayed trade produces the same ID and deduplicates.
+Assert-then-apply is atomic over the accounts touched; the ledger is a
+single-writer partition per asset class; negative balance is a write-time
+assertion, not a downstream check.
 
-## 4.6 Reconciliation
+Reconciliation runs continuously: balances recomputed from the journal against
+the materialised view; sequence-range checks for gaps and duplicates per trade
+sequence; hot and cold mirrors against actual chain balances; and every account
+rebuilt from the log against the live ledger, which is the check that catches
+divergence between the two folds of §4.3.
 
-Continuous, because software has bugs and operators have UPDATE statements:
+## 4.6 What is designed here and not built
 
-1. Recompute balances from the journal nightly, diff against the materialised
-   view, page on any non-zero difference.
-2. Every trade sequence has exactly the expected number of ledger entries; gaps
-   and duplicates are detected by sequence-range checks.
-3. `EXCHANGE_HOT` and `EXCHANGE_COLD` mirrors against actual chain balances per
-   asset.
-4. Sum of holds against sum of consumed leases (§4.3). This one is specific to
-   this design and it is the check that would catch a lease-accounting bug
-   before it reached the balance sheet.
-
-## 4.7 What is designed here and not built
-
-The ledger module is specified in this section and is not implemented in the
-accompanying simulator, which models the lease side only. The solvency chain of
-§4.3 is therefore an argument in this document rather than a property the
-simulator checks, and the evidence appendix does not claim otherwise.
+The ledger module is specified here and not implemented in the simulator, which
+models the envelope and account sides only. The three facts of §4.3 are
+established for the account; the venue-level solvency statement is an argument in
+this document and not a property anything checks.

@@ -2,112 +2,98 @@
 
 ## 9.1 How AI was used
 
-An AI assistant was used throughout as a co-author for design and
-implementation: proposing the mechanism, writing the simulator, deriving the
-Fermi estimates, and drafting these sections. Every experiment in the evidence
-appendix was executed rather than described, and the outputs quoted in
-`REPRODUCE.md` are the outputs those runs produced, on Python 3.13.5 locally and
-3.12.3 in the assistant's environment, byte-identical because the simulator is
-integer-only and seeded.
+An AI assistant was used throughout as a co-author: proposing mechanism, writing
+the simulator, deriving the Fermi estimates, and drafting these sections. Every
+experiment was executed rather than described, and the outputs quoted in
+`REPRODUCE.md` are the outputs those runs produced — Python 3.12.3 on Linux in
+the assistant's environment and 3.13.5 on macOS locally, identical except for
+E3's wall-clock figures, because the simulator is integer-only and seeded.
 
-The material below is the part the rubric asks for: what was rejected, and why.
+The material below is what the rubric asks for: what was rejected, and why.
 
 ## 9.2 Prompts that mattered
 
-Three shaped the work more than the rest.
+**"Verify before building on it."** Applied to citations and to the assistant's
+own characterisation of the design's risks. It surfaced that the risk the
+assistant named first was not the real one (9.3, item 1).
 
-**"Verify the citation before building on it."** The assistant's first
-description of the safety argument cited a specific paper for the sub-additivity
-property from memory. Requiring verification before it went into any document
-surfaced that the *citation* was right and the assistant's *characterisation of
-the risk* was wrong in an important way — see 9.3, item 1.
-
-**"The comments should say what the code does, not what it is supposed to
-prove."** Applied to the simulator and the experiment scripts. The effect is
-visible in `experiments/e2_negative.py`, which describes the configuration it
-runs and prints the counters it recorded, and does not tell the reader what the
-numbers mean.
+**"Comments say what the code does, not what it is supposed to prove."** Applied
+to the simulator and every experiment script, which describe the configuration
+they run and print the counters they recorded.
 
 **"Does the constraint actually bind?"** Asked of the first E1 run, which
-reported zero invariant violations. It did so because the budget was so far above
-what the order flow consumed that the mechanism never engaged. A zero that comes
-from a slack constraint says nothing. The configuration was re-tuned until lease
-exhaustion appeared in the counters, and only then was the zero meaningful.
+reported zero violations because the budget was far above what the flow consumed.
+A zero from a slack constraint says nothing. E1 now carries a **binding trial**
+where the risk and debit envelopes reach 99% and the requirement is 49% of
+equity; only that zero is meaningful.
 
-## 9.3 Suggestions rejected, and why
+**"Attack your own interface."** External hostile review was run each round
+against the code rather than the prose. It produced the authority-binding
+failure (9.3, item 6), among others.
 
-**1. That tiered maintenance margin breaks the decomposition.**
-The assistant proposed this as the design's leading risk. Verification showed it
-is not: margin tiers are per contract, and each contract lives on one shard, so
-tiering is additive across shards and the local check is exact rather than
-conservative. The property that actually breaks decomposition is the portfolio
-level concentration and liquidity add-on, which is super-additive. Accepting the
-first framing would have put a false risk in the paper and hidden the real one.
+## 9.3 Suggestions and claims rejected, and why
 
-**2. Abstracting the requirement into a general coherent-risk-measure
-formulation.**
-Proposed as a way to make the treatment look more rigorous. Rejected: the
-argument in §2.3 rests on exchanging a maximum with a sum, and burying that step
-inside a general functional makes the paper harder to defend, not stronger. Four
-lines of concrete algebra that any member can reproduce at the board beat a page
-of notation nobody in the team can be questioned on.
+1. **That tiered maintenance margin breaks the decomposition.** Proposed as the
+   leading risk. It is not: tiers are per contract and additive. What actually
+   breaks decomposition is the portfolio-level add-on, which is super-additive.
+2. **Abstracting the requirement into a general coherent-risk-measure
+   formulation.** Rejected: §2.3 rests on exchanging a maximum with a sum, and
+   burying that step inside a general functional makes the paper harder to
+   defend, not stronger.
+3. **Charging an order its marginal requirement.** A leg flipped from short to
+   long leaves the increment unchanged while the account's requirement moves to
+   its maximum (c1). Replaced by absolute worst-fill envelopes.
+4. **A price-conditional schedule as a safety and capacity mechanism.** Withdrawn
+   with its evidence (ADR-2). A lease cannot remove a position it already
+   admitted.
+5. **Letting a gateway accept locally risk-reducing orders under partition.**
+   Withdrawn: c9. Risk reduction is an account-level operation.
+6. **Treating a lease id as authority.** Review demonstrated a valid lease id
+   submitted under a different account returning success. Replaced by the
+   registry and session binding of Appendix C.3.
+7. **Reading the factor of two as a 64% tolerance for a misreported account.**
+   Measured in a non-binding configuration. At the binding point the breach
+   tracks the overstatement one for one (E5 Part B).
+8. **Expiry releasing exposure**, and **a holder's own report releasing it.**
+   Both replaced by seals and the account barrier (c8, c11, c12).
 
-**3. Checking `M(P) <= equity` as a single invariant.**
-The first invariant oracle did this and reported 137 violations under a falling
-equity path. The violations were real arithmetic and the wrong conclusion: an
-equity fall puts existing positions above the requirement with no order having
-been admitted, which is a liquidation event and not an admission failure. The
-check was split, and a liquidation path added. Had this been discovered after the
-paper was drafted rather than during implementation, §5 would have been written
-around a mechanism that does not do what it claims.
+## 9.4 What the numbers are, and are not
 
-**4. Fencing by comparing the order's generation with the lease's.**
-The obvious rule, implemented first, and wrong: a stale shard and a stale order
-agree with each other. Found by the scripted case in E2. The corrected rule is in
-§2.5 and §5.4.
-
-**5. Re-running liquidation on every tick that reported the condition.**
-Compounded the reduction and drove positions to zero. The condition persists
-until the consumption counters are reset, so liquidation is followed by a
-generation bump and a re-issue.
-
-**6. Sizing the whole project around a scalar lease.**
-The mechanism in the first version of the proposal used a single amount per
-epoch. E4 shows it above equity 236 ticks out of 480. The schedule of §2.4 was
-added in response to a measurement, not to a preference.
-
-## 9.4 What the numbers in this paper are, and are not
-
-- E1, E2, E4 and E5 were run; the tables are their output.
-- The simulator uses a four-state schedule where §1.5 derives sixteen, so the
-  measured exposures are upper bounds rather than estimates.
-- The ledger of §4 is designed and not implemented; the solvency chain of §4.3 is
-  an argument in this document, not a property the simulator checks.
-- The replay rate of §5.5 is assumed, not measured. It is the first item in §8.
+- **Current evidence:** E1–E7, and eleven test files — 16 lifecycle
+  counterexamples, 6 worst-fill cases plus an exhaustive closed-form comparison
+  over 4,000 books, 6 recovery cases, 14 liquidation cases, 6 repricing cases, 6
+  authority cases, 7 execution-cost cases, 14 ledger cases, and a lifecycle fuzz
+  over 10,060 admissions.
+- E3's absolute latencies support a **scaling** claim, not NFR row 2's target.
+- E6's required-buffer figures are one configuration, one seed, one price path.
+- The ledger of §4 is designed and not implemented; §4.3 establishes three facts
+  about the account, not venue-level solvency.
+- The replay rate of §5.5 is assumed, not measured (§8.1).
 - §6.3 A3 is argued, not measured.
+- Replication and allocator failover are designed and not built (Appendix B).
+- Superseded results — E4's schedule comparison, E5's suppression sweep — are in
+  `experiments/superseded/` and are cited nowhere as current.
 
 ## 9.5 Section ownership
 
+**TODO — names to be filled in before submission.** Every member presents their
+own sections at the defence and the panel may ask any member any question.
+
 | § | Section | Owner |
 |---|---|---|
-| 1 | Business context and requirements | |
-| 2 | Architecture | |
-| 3 | Consistency map | |
-| 4 | Data and storage design | |
-| 5 | Failure and recovery | |
-| 6 | Security and threat model | |
-| 7 | Trade-offs and alternatives | |
-| 8 | Operations | |
-| 9 | This appendix | |
-
-Module ownership in the accompanying repository:
+| 1 | Business context and requirements | TODO |
+| 2 | Architecture | TODO |
+| 3 | Consistency map | TODO |
+| 4 | Data and storage design | TODO |
+| 5 | Failure and recovery | TODO |
+| 6 | Security and threat model | TODO |
+| 7 | Trade-offs and alternatives | TODO |
+| 8 | Operations | TODO |
+| 9 | This appendix, and appendices A–C | TODO |
 
 | Module | Owner |
 |---|---|
-| Sharded matching stub and replicated log | |
-| Margin allocator, risk decomposition, conditional leases, fencing | |
-| Ledger, hold-versus-lease separation, idempotency chain | |
-| Fault injection, liquidation, evaluation harness | |
-
-*Names to be filled in before submission. Every member presents their own
-sections at the defence, and the panel may ask any member any question.*
+| Risk decomposition, allocator, envelope solve | TODO |
+| Ordering point, authority binding, fencing and seals | TODO |
+| Gateway, worst-fill envelopes, recovery | TODO |
+| Ledger, liquidation, settlement barrier, evaluation harness | TODO |

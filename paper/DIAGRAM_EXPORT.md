@@ -17,18 +17,19 @@ Per figure:
        mkdir -p paper/figures
        mv ~/Downloads/mermaid-diagram-*.svg paper/figures/fig1_component.svg
 
-   Repeat with fig2_dataflow.svg, fig3_liquidation.svg, fig4_failure.svg.
+   Repeat with fig2_dataflow.svg, fig3_liquidation.svg, fig4_failure.svg,
+   and fig5_deployment.svg from `paper/B_target_deployment.md`.
 
 Check after all four:
 
     ls paper/figures/
 
-Expect four files. If a paste renders as an error message rather than a
+Expect five files: four from `paper/diagrams.md` and one from Appendix B. If a paste renders as an error message rather than a
 diagram, the block was copied with a fence line included.
 
-The four blocks have been checked structurally — correct diagram kind, no stray
+The five blocks have been checked structurally — correct diagram kind, no stray
 fences, `<` escaped as `&lt;` inside labels — but they have not been rendered in
-this environment. mermaid.live is the first place they render, so check all four
+this environment. mermaid.live is the first place they render, so check all five
 before exporting.
 
 For the PDF, SVG keeps text selectable and scales without blurring. If the
