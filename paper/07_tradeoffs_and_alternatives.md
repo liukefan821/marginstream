@@ -32,40 +32,89 @@ proof is pending.
 shards, so every charge is conservative and the account is charged more than its
 true risk. §6.3 A3 records the incentive distortion this creates.
 
-## ADR-2 — Scalar lease per epoch, or a schedule over market states
+## ADR-2 — Scalar lease per term, or a schedule over market states
 
-**Decision.** A schedule, non-increasing in the published market state.
+**Decision.** A flat ceiling for the term. The schedule is retained only as a
+local operational trigger and carries no safety or capacity claim.
 
-**Alternative — a single amount fixed for the epoch.**
-Rejected on E4. Over eight epochs of sixty ticks with the market state advancing
-inside each epoch, a scalar lease spent **236 of 480 ticks with the requirement
-above equity**, and no gateway could detect the condition locally. The schedule
-spent none.
+**This ADR reverses an earlier decision, and the reversal is the interesting
+part.** The first version of this document issued capacity as a schedule
+contracting with a published market state index, and argued from E4 that a
+scalar lease spent 236 of 480 ticks with the requirement above equity while the
+schedule spent none. The mechanism that produced those numbers was wrong in a way
+the experiment could not see: it charged the *increment* an order added rather
+than the absolute envelope, so a leg flipped from short to long looked free. Once
+admission compares absolute envelopes, the safety condition is
 
-**What the decision costs.** The market-data path now carries authority it did
-not carry before (§6.1), which opens A1 and A2 in §6.3. A1 is closed by the
-ratchet at no cost on an honest feed. A2 is only partially mitigated: under
-suppression the ratchet reduces exposure from 12 ticks to 5 and costs 9 admitted
-orders. The residual is pushed to the mark pipeline, which this document names
-and does not design.
+    2 * sum_g λ_g^R + A( sum_g λ_g^G ) + sum_g λ_g^D <= E_0
 
-Also: the schedule shape and the state banding become versioned parts of the
-state machine (§5.6), so an operator cannot tune them during a volatile session.
-That is a real operational loss. The alternative — runtime-tunable shapes — makes
-replay non-deterministic and was rejected for that reason alone.
+and there is no market state in it at all.
 
-## ADR-3 — Sizing capacity for the worst state, or as a function of state
+**Why a schedule cannot buy safety.** A lease cannot remove a position it has
+already admitted. Capacity that shrinks as the market moves restricts what a
+gateway may admit *next*; it does nothing about what the gateway admitted at the
+start of the term, which is where the exposure is. A flat ceiling at the level
+the condition solves for is equally safe and admits at least as many orders as
+any decaying schedule with the same starting point.
 
-**Decision.** As a function of state.
+**What it keeps.** A gateway evaluating a shrinking curve at the state it already
+receives can notice, on a market-state tick and with no order present, that its
+consumption is above where the venue would like it to be, and report that
+locally. That is a useful trigger and it is not a capacity mechanism. Its value —
+whatever it saves in tail exposure and forced reduction — is unmeasured, and
+accepted-order count is not the metric for it.
 
-**Alternative — one conservative amount sized for the worst state the schedule
-must survive.** This is the flat curve in E4, and it is safe: zero ticks above
-equity. It admitted **29 orders**. The steepest state-contingent schedule
-admitted **111** at the same zero-breach outcome, a factor of 3.8.
+**Withdrawn along with the decision:** E4's 236-of-480 figure and E5's
+suppression comparison. Both were produced by the superseded interfaces and both
+now live in `experiments/superseded/`. They are not cited as current results
+anywhere in this document.
 
-The general form of the finding: capacity granted as a function of state
-recovers throughput that worst-case sizing gives away, because most of the time
-the market is not in the worst state.
+**What the reversal costs.** The market-data path still matters, because the
+marks set equity and `mark_plus`, but it no longer carries authority *inside the
+admission check*. §6.1 states the weaker claim.
+
+## ADR-3 — Where gross notional is measured
+
+**Decision.** Two figures, not one. The requirement uses gross at the marks in
+force; the reserve uses gross at `mark_plus`, the highest mark each symbol
+reaches at any scenario in the grid.
+
+**Alternative — one figure at the current mark.** This is what the code did until
+repricing was introduced, and it is unsafe. `A` is a function of gross, gross
+depends on the mark, and a lease is solved once and then admits for a term over
+which the mark moves. A short position's adverse scenario raises the mark, raises
+gross and raises the add-on, while a figure measured at the issuance mark does
+not move.
+
+The arithmetic, from `tests/test_repricing.py` m1 — one symbol, 200 of scenario
+requirement and 7 of execution cost per lot, `E_0` of 1,000,000:
+
+| Reserve measured at | Lots admitted | Requirement after the move | Equity after the move | Over by |
+|---|---|---|---|---|
+| the issuance mark, 1000 | 296 | 1,320,871 | 938,728 | 382,143 |
+| `mark_plus`, 1200 | 249 | 942,615 | 948,457 | inside by 5,842 |
+
+**What the decision costs.** 47 lots of the 296, about sixteen per cent of
+capacity in that configuration. That is the price of making both terms of the
+requirement maxima over the same scenario set, which is what the earlier
+formulation only did for `R`.
+
+**Scope of the tightness claim.** `mark_plus` takes the worst mark per symbol
+independently and is an upper bound on the per-scenario maximum in every case. It
+is *tight* only in the model configured here, which has one factor and
+non-negative loadings, so every symbol reaches its highest mark at the same
+scenario; there the gap is the rounding, at most one minor unit per lot (m4a).
+With signed loadings the symbols peak at different scenarios and the gap is
+unbounded by that figure: m4b constructs two symbols with opposite loadings where
+the per-symbol bound is 24,000 against a best single scenario of 20,000. The
+bound stays safe; the tightness statement does not generalise and is not written
+as though it does.
+
+**The superseded ADR-3.** The earlier version of this ADR chose state-contingent
+sizing over worst-state sizing and cited a 3.8× throughput gain from E4. That
+number is withdrawn with ADR-2. Under the corrected condition the reserve *is*
+sized for the worst state the grid contains, and the throughput question is
+answered by the utilisation figures of §2.4 rather than by a curve shape.
 
 ## ADR-4 — What goes on the replicated log
 
@@ -83,7 +132,9 @@ derived value, unless the derivation is not deterministic. This is the same
 argument the running case makes for balances being a fold of the journal.
 
 **What the decision costs.** Everything in the derivation becomes part of the
-state machine, which is where ADR-2's operational loss comes from.
+state machine. ADR-2's schedule shape was the main thing that made that costly;
+with the schedule withdrawn, what remains versioned is the scenario grid, the
+add-on parameters, the price bands and the fee caps.
 
 ## ADR-5 — How the allocator is partitioned
 

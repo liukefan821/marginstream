@@ -17,7 +17,7 @@ Per figure:
        mkdir -p paper/figures
        mv ~/Downloads/mermaid-diagram-*.svg paper/figures/fig1_component.svg
 
-   Repeat with fig2_dataflow.svg, fig3_deployment.svg, fig4_failure.svg.
+   Repeat with fig2_dataflow.svg, fig3_liquidation.svg, fig4_failure.svg.
 
 Check after all four:
 
@@ -25,6 +25,11 @@ Check after all four:
 
 Expect four files. If a paste renders as an error message rather than a
 diagram, the block was copied with a fence line included.
+
+The four blocks have been checked structurally — correct diagram kind, no stray
+fences, `<` escaped as `&lt;` inside labels — but they have not been rendered in
+this environment. mermaid.live is the first place they render, so check all four
+before exporting.
 
 For the PDF, SVG keeps text selectable and scales without blurring. If the
 document toolchain cannot place SVG, export PNG from the same Actions menu at

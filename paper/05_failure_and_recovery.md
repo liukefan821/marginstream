@@ -62,66 +62,187 @@ derivation is not deterministic. Applying it here removes 24 MB/s from the log.
 
 ## 5.3 The idempotency chain
 
-End to end, for one client order:
+End to end, for one client order. Every link is a named identifier and a
+decision point that has been tested rather than argued.
 
-1. The client assigns a client order ID and retries with the same ID on timeout.
-   A timeout is an unknown outcome, not a failure.
-2. The ingress gateway stamps the order with the generation of the lease it
-   holds and forwards it.
-3. The shard admits or refuses. A refusal is final for that (order ID,
-   generation) pair; a retry through a different gateway is a new admission
-   attempt, and it may consume an additional ingress credit.
-4. The matching shard applies a given client order ID at most once, so no
+1. **The client** assigns a client order ID and retries with the same ID on
+   timeout. A timeout is an unknown outcome, not a failure.
+2. **The gateway** checks its three envelopes and, if they hold, submits to the
+   ordering point under `(lease_id, admission_seq)` where `admission_seq` is the
+   next number it has used under that lease.
+3. **The ordering point** accepts that pair only if it is the next number for
+   the lease, and only if the lease is not fenced. A retry carrying the same
+   payload under the same pair succeeds again and records once; the same pair
+   with a different payload is a conflict and records nothing. The gap-free
+   sequence is what later lets a seal claim to cover every admission the lease
+   produced.
+4. **A fill** is submitted under a `fill_id` against an `order_id`. The ordering
+   point refuses it — writing nothing and moving nothing — if the identifier has
+   been used with different figures, the order is unknown or cancelled, the
+   direction disagrees, the cumulative quantity would exceed what was admitted,
+   the price falls outside the band recorded at admission, or the fee exceeds the
+   cap for that quantity. A retry with the same figures lands once
+   (`tests/test_execution_debit.py`, d4 to d6).
+5. **The order of operations is fixed**: the ordering point decides first, and
+   only a fill it accepted is folded into the gateway and the account. An earlier
+   implementation called the gateway first, which moved state the authority then
+   refused.
+6. **A liquidation basket** is committed under a `basket_id` as a single record.
+   A retry with the same payload is idempotent; the same identifier with
+   different figures is refused and moves nothing (`tests/test_liquidation.py`,
+   l7). A process that dies between the commit landing in the log and the
+   transfer being folded in locally rebuilds from the log, and `applied_baskets`
+   plus the ledger's fill keys make the reapplication land once (l14).
+7. **Replay is idempotent by log position.** An earlier version relied on the
+   order ID for that, which covers admissions and not fills or cancels, and
+   replaying the same slice twice applied the fills twice
+   (`tests/test_recovery.py`, r2).
+8. **The matching shard** applies a given client order ID at most once, so no
    duplicate book action occurs regardless of how many times the order was
    admitted upstream.
-5. Clearing derives ledger entry IDs deterministically from the trade sequence,
-   so a replayed trade produces the same entry ID and is deduplicated (running
-   case, Part 3 §4).
+9. **Clearing** derives ledger entry IDs deterministically from the trade
+   sequence, so a replayed trade produces the same entry ID and is deduplicated
+   (running case, Part 3 §4).
 
-Step 3 is where this design differs from the running case, and it is a cost we
-state rather than hide: a retry routed through another gateway may conservatively
-consume an additional ingress credit, but it cannot produce a duplicate book
-action. The credit is recovered at the next epoch. The retry-amplification factor
-is a measured quantity in the evidence appendix, not an assumption.
+Step 2 is where this design differs from the running case, and it is a cost we
+state rather than hide: a retry routed through another gateway is a new admission
+attempt at that gateway and may conservatively consume envelope there, though it
+cannot produce a duplicate book action. That consumption is released at the next
+issuance.
+
+One asymmetry is deliberate and matters later. A cancel *request* releases
+nothing; only an acknowledgement recorded at the ordering point does, because
+until then the order can still fill. That produces two different failures which
+are not the same fact and are tested separately (§5.4).
 
 Exactly-once is, as in the running case, end-to-end idempotency layered on
 at-least-once delivery. Nothing in the margin path changes that.
 
-## 5.4 Fencing
+## 5.4 Fencing, liquidation and settlement
 
-Two rules, both of which we got wrong in a first implementation and corrected
-after the simulator produced counterexamples. Both corrections are recorded in
-`REPRODUCE.md` and reproduced here because they are the substance of this
-section.
+An account cannot reach a requirement above its equity through any move the
+scenario grid covers; that is what the closure of §2.4 reserves for. So a
+liquidation is by construction an event outside the model, the credit event has
+already happened by the time anyone can see it, and the mechanism is not
+preventing a violation. It is limiting a loss, and what it limits is the draw on
+the insurance fund once the account's own equity is gone.
 
-**Rule 1 — a shard that has seen a higher generation must fail closed.** The
-first implementation compared the generation carried by the order with the
-generation of the lease the shard held, and refused on mismatch. That looks
-sufficient and is not: a shard still holding a superseded lease accepts an order
-that carries the same superseded generation, because the two agree. The shard
-therefore keeps spending an allowance the allocator has already replaced. The
-corrected rule is that the generation observed on any message is monotone
-evidence of the allocator's position, so a shard whose lease is below the highest
-generation it has seen refuses to serve at all.
+### Three things have to stop, in three different places
 
-The scripted case in E2 makes the difference concrete. Two shards, both leased at
-epoch 0; equity halves at epoch 1 and only shard 0 receives the new lease. With
-the rule in force, shard 1 refuses everything and the requirement stays at 4,703
-against 10,000 of equity. Without it, shard 1 spends the 4,700 it still holds on
-top of shard 0's 4,500 and the requirement reaches 10,047 against 10,000 — a
-detected breach. The zero-violation result of E1 is only meaningful because this
-case shows the checker fires when it should.
+| What | Where it stops | What it costs |
+|---|---|---|
+| New admissions | a fence at the ordering point | one write; no gateway has to be reachable |
+| Resting orders filling | a cancel acknowledged at the ordering point | one round trip per order, and it can fail (below) |
+| The position moving | trading it out | as long as the unwind takes |
 
-**Rule 2 — liquidation voids leases before it reduces positions.** Entering
-liquidation bumps the account's generation, which invalidates every outstanding
-lease by Rule 1, and only then are positions reduced. Reversing the order leaves
-a window in which a shard is still spending against an allowance computed for a
-portfolio that is being changed underneath it.
+Only the first is immediate, and only the first works under partition. E7's
+`fence_undelivered` arm takes the fence and tells no gateway: the ordering point
+turns away 50 submissions and the run is otherwise identical to the base.
 
-A related error, also recorded: re-running liquidation on every tick that
-reported the condition compounded the reduction and drove positions to zero.
-Liquidation is followed by a generation bump and a re-issue, which resets the
-consumption counters, so the condition clears instead of repeating.
+### The unwind is an internal transfer, not orders on the books
+
+Reducing one leg at a time does not work. On a hedged book, closing one leg while
+its offset stays put raises the account's requirement — c9 again, with the
+liquidator in the gateway's place. `tests/test_liquidation.py` l3 measures the
+requirement going from 0 to 2,000 on a single-leg proposal and staying at 0 on a
+proportional basket.
+
+That forces a basket, and a basket forces an architecture decision, because
+matching here is sharded by symbol. **A basket spanning several symbols cannot
+fill atomically across several order books**, and a partial fill on one shard
+with none on another leaves the account somewhere the check never approved. This
+design does not assume an atomicity the matching path does not have and does not
+route baskets through it. Instead the liquidator prices the whole basket against
+the venue's own marks, inside the same band and fee cap an ordinary fill is held
+to, and the ordering point commits it as one record. Either the record is there
+and the whole basket happened, or it is not and none of it did.
+
+**The cost is that the venue is the counterparty to that transfer.** Risk moves
+from the account to the venue's own book and, past the account's equity, to the
+insurance fund. Venue-side portfolio risk and capital limits for that book are
+not modelled anywhere in this document. Nothing here claims sharded matching
+supports atomic cross-symbol baskets.
+
+### Two ways a cancel fails, which are not the same fact
+
+| Failure | What the log holds | What the settlement must do |
+|---|---|---|
+| The acknowledgement was recorded and the notification to the gateway was lost | the cancel | release the order. Nothing can fill against it; only the local view is stale |
+| The matching side never confirmed | nothing | keep the order's worst-fill reservation and its execution-cost reserve. It is still able to fill |
+
+Fencing does not help in the second case: it stops new admissions and does
+nothing to an order already resting. l12 and l13 pin them separately and E7 runs
+them as separate faults, because the difference is not in what the gateways show
+— both show one order live — but in what the log holds. The settlement figure is
+`(0, 0, 0)` for the recorded cancel and `(120, 2232, 9)` for the unacknowledged
+one.
+
+### Two kinds of release
+
+**A seal releases one lease.** It is portable evidence: the ordering point issues
+it when a lease is fenced, naming the last admission it recorded, and a holder
+carries it to the allocator. A release is refused unless the lease is fenced, the
+seal is the one issued for that lease, and its terminal sequence matches. The
+figures come from the ordering point's log, not from whoever asks for the
+release; an earlier version accepted a correct seal paired with an optimistic
+usage claim.
+
+**A barrier compacts the whole account.** Per-holder occupancy is summed and does
+not net, which is necessary while any holder may still be acting and badly wrong
+once none is: after a liquidation each ingress lease reconciles to its own gross
+leg, the offsetting legs sit under the liquidator, and an account holding nothing
+still looks fully occupied. The account-wide path does not use a seal, because
+the allocator reads the same log the seal was cut from, so an undelivered seal
+does not freeze an account's capacity. What it rests on is the terminal fence the
+ordering point has already recorded.
+
+The rule, stated so the two are not confused:
+
+> A seal releases one lease. A globally fenced, ordered account barrier permits
+> account-wide compaction.
+
+Compaction requires all of the following, and none of them is supplied by the
+caller:
+
+1. the account is in `settling`, so no new lease can be issued for it;
+2. every lease ever minted for the account is fenced at the ordering point —
+   every ingress lease, every incarnation, and the liquidator's own basket
+   authority. A lease that admitted nothing is still authority;
+3. a barrier watermark `B` at which the recorded sequence under each of those
+   leases is gap-free and no admission or basket for the account was recorded
+   under a lease outside the set;
+4. the aggregate rebuilt from the log at `B`: filled positions, orders with no
+   authoritative cancel acknowledgement, worst-fill risk, repriced gross reach,
+   and the execution cost still ahead of the account;
+5. installation under a credit-version compare-and-set, so a settlement computed
+   at an older barrier cannot overwrite a newer one;
+6. issuance resumes only after the install.
+
+E7 exercises the refusals as well as the successes: `no_fence` is refused with
+two ingress leases live, and `liquidator_authority_live` is refused with the
+liquidator's lease live even though every ingress lease is fenced and the account
+is flat.
+
+### What the mechanism bounds during the delay, and what it does not
+
+E6 decomposes the equity change exactly and asserts the identity on integers with
+no tolerance:
+
+    ending equity == trigger equity + drift - slippage - fees
+
+Across the delay sweep, execution cost runs from 2,522 to 6,486 while drift runs
+from 16,444 to 229,708. **The two things the mechanism controls — new admissions,
+and the execution cost of unwinding what is there — are bounded. Market drift is
+not, and it is linear in the delay.** The unwind's cost sits inside the bound
+taken over the reachable position at the moment authority ends, and outside any
+bound taken at the moment the shortfall was detected, because everything admitted
+during the detection delay is inside the first and outside the second. In the
+unfenced arm there is no moment at which authority ends and the cost exceeds the
+bound by 1,562.
+
+The required-buffer figures E6 reports are measurements of one configuration and
+one seed along one price path. They are not a bound, not an upper bound, and not
+a probabilistic guarantee, and §7 does not use them as one.
 
 ## 5.5 Recovery-time arithmetic
 
@@ -130,15 +251,20 @@ Two different events with two different budgets.
 **Warm failover** — a leader is lost and a follower takes over. Followers apply
 the same log and hold the same books, so there is no rebuild; the cost is the
 election plus the commit catch-up on the tail. The budget is row 8: under 3
-seconds. The allocator fails over the same way, and because the log now carries
-the schedule inputs rather than the schedules, a new allocator leader recomputes
-identical schedules from the same records.
+seconds. The allocator fails over the same way, and because the log carries the lease
+inputs rather than the leases, a new allocator leader recomputes identical
+ceilings from the same records. That is the design; the allocator's own snapshot
+and failover are not implemented, and §5.7 says so.
 
-Behaviour during the window matters more than its length. Shards keep the leases
-they hold and continue to admit within them; when the leases expire and no new
-generation arrives, the fail-closed rule of §5.4 puts every shard into
-reduce-only. The venue therefore keeps accepting risk-reducing orders throughout
-an allocator failover, which is the property §3 defends in business terms.
+Behaviour during the window matters more than its length. Gateways keep the
+ceilings they hold and continue to admit within them; when the terms expire and
+no new generation arrives, every gateway stops admitting entirely. It does not
+fall back on admitting orders that look locally like risk reduction, because c9
+shows that judgement is unsound across gateways. Risk reduction during that
+window is the liquidation path's job (§3.3), which is the property §3 defends in
+business terms — and it means the failover budget and the term length interact:
+a failover longer than the shortest outstanding term leaves accounts with no
+ingress at all until issuance resumes.
 
 **Cold rebuild** — a node restarts with nothing. Budget from the running case:
 under 60 seconds.
@@ -191,10 +317,31 @@ is the right trade is argued in §7.
 
 ## 5.7 What is not covered here
 
-- The liquidation waterfall — partial liquidation, insurance fund, and
-  auto-deleveraging — is in §5.4 only as far as the generation bump. The
-  mechanism that decides how much to reduce and who absorbs the shortfall is a
-  separate design and is not claimed here.
+Three boundaries, stated here rather than left for a reviewer to find.
+
+**This is a deterministic simulator, not a deployment.** Everything measured in
+this document runs in one process against an in-memory ordering point. A
+replicated ordering point, allocator high availability, leader election and a
+real distributed deployment are *designed* in this document and *not built*. The
+recovery results are about the fold from the log being deterministic and
+idempotent, which is the property replication would need, and they are not
+evidence that the replication works.
+
+**The allocator's own crash and failover are not implemented.** The gateway, the
+account and the settlement path all rebuild from the log and are tested doing so.
+The allocator does not, and a settlement installed under a credit-version
+compare-and-set is a mechanism for ordering competing installs, not a substitute
+for that missing work.
+
+**The liquidation transfer moves risk onto the venue.** The basket is an internal
+transfer with the venue as counterparty (§5.4), so the venue's own book absorbs
+what the account cannot. Venue-side portfolio risk, capital limits on that book,
+and the insurance fund's sizing are outside this document entirely.
+
+- The liquidation waterfall beyond the unwind itself. §5.4 covers fencing,
+  cancellation, the basket transfer and the settlement barrier. How much to
+  reduce and in what order, auto-deleveraging, and who absorbs a shortfall the
+  insurance fund cannot are a separate design and are not claimed here.
 - The replay-rate assumption of §5.5 is unmeasured.
 - Cross-datacentre replication is out of scope; everything above assumes a
   single availability zone with the geo case handled the same way the running

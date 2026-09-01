@@ -388,7 +388,7 @@ def main():
     print("\nPart C - the drift component against the rate, at a fixed delay "
           "of 8 ticks")
     print(f"{'rate':>11} {'drift':>10} {'execution':>10} {'end equity':>11} "
-          f"{'loss':>8}")
+          f"{'draw':>8}")
     part_c = []
     for rate in (10, 20, 40, 80, 160):
         row = one(8, ack=1, cap=40, arm="fenced", seed=1, rate=rate,

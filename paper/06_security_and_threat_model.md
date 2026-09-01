@@ -1,22 +1,66 @@
 # 6. Security and threat model
 
-## 6.1 Trust boundaries and blast radius
+## 6.1 Trust boundaries and the trusted computing base
 
-| Boundary | What crosses it | Blast radius if the far side is fully compromised |
+| Boundary | What crosses it | If the far side is fully compromised |
 |---|---|---|
-| Client ↔ ingress gateway | Orders, cancels, API credentials | The account's own capacity for the current epoch. A gateway cannot exceed the leases it holds, and leases are per account, so one compromised client cannot consume another's capacity |
-| Ingress gateway ↔ matching shard | Admitted orders carrying a generation | A compromised gateway can spend the leases it holds and no more. It cannot mint capacity, because the shard checks the lease itself and refuses a superseded generation |
-| Market-data publisher ↔ shard | Market state index | Capacity available to every account on that shard. This boundary is new in this design and is the subject of §6.3 |
-| Allocator ↔ shard | Schedule inputs and generation | An account's whole capacity. The allocator is the authority for margin and a compromise of it is a compromise of the invariant |
-| Chain ↔ custody | Deposits, withdrawals | Venue assets. Unchanged from the running case: hot float sized to hours of net outflow, cold behind an m-of-n ceremony |
+| Client ↔ ingress gateway | Orders, cancels, API credentials | The account's own ceilings for the current term. Ceilings are per account, so one compromised client cannot consume another's |
+| Ingress gateway ↔ ordering point | Admissions under `(lease_id, seq)` | **The gateway is inside the trusted computing base.** See below |
+| Ordering point ↔ everything | Every admission, fill, cancel, fence, basket and barrier | Total. This is the component every safety claim in the document rests on |
+| Liquidator ↔ ordering point | Basket transfers | The account it is liquidating, in full. Nothing in the capacity accounting bounds it |
+| Market-data publisher ↔ allocator | Marks | How much capacity is solved for, for every account. Not the admission check itself |
+| Allocator ↔ gateway | Lease inputs and generation | An account's whole capacity. The allocator is the authority for margin and a compromise of it is a compromise of the invariant |
+| Chain ↔ custody | Deposits, withdrawals | Venue assets. Unchanged from the running case |
 | Operator ↔ ledger | Nothing. There is no write path | An operator with database access can corrupt state; detection is reconciliation, not prevention |
 
-The row worth dwelling on is the third. In the running case the market-data path
-is a fan-out: it carries no authority and a wrong value there produces a wrong
-screen, not a wrong balance. Here the shard reads the market state to evaluate
-its capacity schedule, so a value on that path changes what the venue will
-admit. **We have moved authority onto a path that did not previously carry any.**
-That is the price of the mechanism in §2.4 and §6.3 measures it.
+### The gateway is inside the trusted computing base
+
+An earlier version of this document claimed that a compromised gateway's blast
+radius is bounded by the leases it holds, because the shard would check the lease
+itself. That claim is withdrawn. Nothing downstream re-derives the envelopes: the
+ordering point checks that an admission is the next number for a live lease and
+that a fill matches the terms recorded at admission, and it does not recompute
+the worst-fill figures the gateway compared against its ceilings. **A gateway
+that lies about its own envelope arithmetic is believed.**
+
+What a compromised gateway therefore cannot do:
+
+- act under a fenced lease, or after its term, because the ordering point refuses
+  the submission and no gateway is consulted about that;
+- produce a gap in its own admission sequence, because the ordering point accepts
+  only the next number, so an admission it hides is one the log would then reject;
+- fill outside the price band or above the fee cap it was admitted under, or fill
+  in the wrong direction, or over-fill, or land the same fill twice;
+- spend another account's capacity, or another holder's.
+
+What it can do: admit orders that its ceilings do not cover, for the accounts it
+serves, until its term ends or it is fenced. The bound on that damage is the term
+length and the fence latency, not the ceiling.
+
+Closing this would mean re-deriving the worst-fill envelopes at the ordering
+point, which puts the per-order margin computation back on the single-writer
+path — the thing §2.2 exists to avoid. That is a real trade and it is not made
+here. It is named as the residual.
+
+### The liquidator is inside it too, on its own account
+
+The liquidator's orders are checked against the merged account rather than
+against a ceiling, because c9 shows a gateway cannot make that judgement on its
+own. So no ceiling bounds it. The non-increase test does bound the *risk* it can
+create — neither merged envelope may rise — but it permits unlimited churn, and
+churn costs execution. Its authority ends the same way every other holder's does,
+at the ordering point, and the settlement barrier of §5.4 refuses to run while it
+is live. That is containment of duration, not of authority.
+
+### The market-data path
+
+In the running case market data is a fan-out carrying no authority: a wrong value
+produces a wrong screen, not a wrong balance. Here the marks set equity, the
+scenario displacements and `mark_plus`, so a wrong value changes how much
+capacity the allocator solves for. That is weaker than the earlier draft claimed
+— the admission check itself contains no market state, because the schedule was
+withdrawn (§2.4, ADR-2) — but it is not nothing, and §6.3 A2 measures the
+suppression case.
 
 ## 6.2 Who can move money, and with what ceremony
 
@@ -37,12 +81,35 @@ words separate throughout the document is deliberate, because conflating them is
 how an authorisation becomes spendable.
 
 Withdrawals interact with margin in one direction that has to be explicit: a
-withdrawal reduces collateral, so it must void the account's outstanding leases
-before it releases funds. The order is bump generation, re-issue against the
-reduced collateral, then release. Reversing it leaves shards spending against
-collateral that has left the venue.
+withdrawal reduces equity, so the capacity outstanding against the old figure has
+to stop before funds leave. Bumping the generation is not enough, because a
+partitioned gateway keeps admitting inside its term regardless. Two orderings
+work and they differ in latency, not in safety:
+
+1. fence the outstanding leases at the ordering point, reconcile, re-issue
+   against the reduced equity, then release. Binds immediately and costs a fence
+   round trip on the account.
+2. wait for the outstanding terms to end, then re-issue and release. Binds within
+   the term and costs nothing.
+
+The choice is a product decision about withdrawal latency. What is not available
+is releasing first: that leaves gateways spending against equity that has left
+the venue, and it is the same shape as the pre-cut term the lifecycle fuzz
+counts and does not treat as a failure.
 
 ## 6.3 Business-logic abuse cases
+
+**Scope note.** A1 and A2 below were written against the price-conditional
+schedule, which ADR-2 withdraws. Under the current condition the admission check
+reads no market state at all, so A1 — replaying a stale, more favourable state to
+obtain capacity — no longer has a target on the admission path, and the ratchet
+that closed it is no longer load-bearing. A2 survives in weakened form: a
+suppressed mark still overstates equity, and an overstated equity still buys a
+ceiling the account cannot carry, which is the shape E5's misreported-equity
+control measures directly. The E4 and E5 figures quoted in A1 and A2 come from
+superseded experiments and are retained below as the record of what was argued,
+not as current evidence. Rewriting these two cases against the misreported-equity
+control is outstanding work, not something this section claims to have done.
 
 ### A1 — Replaying an older market state
 

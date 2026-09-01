@@ -1197,7 +1197,7 @@ Command and recorded output:
        unfenced     64    -231656      -4368     -2946   -1480       196     -119068   119068  ok
 
     Part C - the drift component against the rate, at a fixed delay of 8 ticks
-           rate      drift  execution  end equity     loss
+           rate      drift  execution  end equity     draw
              10      -9992      -2789      108601        0
              20     -20148      -2820       98414        0
              40     -40360      -2824       78198        0
@@ -1230,7 +1230,6 @@ Command and recorded output:
     orders admitted after the trigger: fenced 254, unfenced 1564
 
     the decomposition accounts for the whole equity change in every run
-
 The required-buffer column is a measurement of this configuration and this seed.
 It is not a bound and not a probabilistic guarantee.
 
@@ -1385,3 +1384,22 @@ this file as history. The current set is `e1` through `e7`.
   the gateway is inside the trusted computing base.
 - `paper/` was written before any of this and still describes the mechanism as
   it was three rounds ago.
+
+### Independent reproduction (2026-09-01)
+
+Verified outside this container, on macOS: Python 3.13.5, Darwin arm64. All ten
+test files and all seven current experiments exit 0 with the same results, with
+one expected difference.
+
+`e3_hot_path_benchmark.py` reports wall-clock nanoseconds and its absolute
+figures are environment-dependent. On the recording environment (Python 3.12.3,
+Linux x86_64) incremental admission is 7,434 ns at the median on a 7-scenario
+grid with 50 live orders; on the verification environment it is 5,666. The
+scaling, which is what E3 is evidence for, is the same on both: incremental
+admission does not move with the number of live orders (5,625 ns at 500 orders
+against 5,666 at 50) while the full scan grows by a factor of 7.7 over the same
+range. E3's absolute figures should not be quoted without the machine they came
+from, and §1.7's latency target is not what they support.
+
+The Part C column of E6 was labelled `loss` while Parts A and B were labelled
+`draw`. It is `draw` in both now; the figures did not change, only the header.
