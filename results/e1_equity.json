@@ -9,12 +9,12 @@
   "realised": 109453,
   "unrealised": -42626,
   "fees": 3366,
-  "max_requirement": 30273,
+  "max_requirement": 32197,
   "min_equity": 203714,
-  "min_headroom": 201427,
+  "min_headroom": 201410,
   "max_utilisation_pct": 5,
   "max_overstatement": 0,
   "max_risk_use_pct": 38,
-  "max_gross_use_pct": 19,
+  "max_gross_use_pct": 20,
   "max_debit_use_pct": 39
 }

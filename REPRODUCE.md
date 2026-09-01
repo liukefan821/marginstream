@@ -968,3 +968,420 @@ tracking the overstatement once the ceiling binds.
   execution cost a new equity has not absorbed.
 - The allocator's own snapshot and failover.
 - Section 6.1's blast-radius claim.
+
+## Liquidation round (2026-09-01)
+
+The remaining technical gap was liquidation latency and operational failure.
+Both experiments need the market to move, and nothing before this round moved
+it. Repricing broke two things immediately, and each of them is a mechanism
+change made because new code broke a safety invariant, not because a cleaner
+design suggested itself.
+
+### The first break: the add-on was evaluated at one mark
+
+`M(P) = R(P) + A(P)` and `A` is a function of gross notional, which depends on
+the mark. A lease is solved once and then admits orders for a term over which
+the mark moves. A short position's adverse scenario raises the mark, raises
+gross, and raises the add-on, while the figure the solve reserved against does
+not move.
+
+Worked on the arithmetic, one symbol, mark 1000, 200 of scenario requirement
+and 7 of execution cost per lot, `E0 = 1,000,000`:
+
+    reserving gross at mark 1000: 296 lots admitted; once the market reaches
+      the widest adverse scenario the requirement is 1,320,871 against equity
+      of 938,728, over by 382,143
+    reserving gross at mark 1200: 249 lots admitted; requirement 942,615
+      against equity 948,457, inside by 5,842
+
+`gross` is now two objects rather than one:
+
+    gross(P)        at the marks in force. this is what the account owes, and
+                    it is what the oracle compares against equity.
+    gross_reach(P)  at mark_plus, the highest mark each symbol reaches in the
+                    grid. this is what a lease reserves against.
+
+The safety argument closes because the requirement after a move inside the grid
+is bounded by the reserve taken before it. The cost is 47 lots of the 296, or
+about sixteen per cent of capacity in that configuration.
+
+**Scope of the tightness claim.** `mark_plus` takes the worst mark per symbol
+independently, and it is an upper bound on the per-scenario maximum in every
+case. It is *tight* only in the model configured here, which has one factor and
+non-negative loadings, so every symbol reaches its highest mark at the same
+scenario; there the gap is the rounding, at most one minor unit per lot (m4a,
+1,500 random portfolios, largest gap 109 against the lot count). With signed
+loadings the symbols peak at different scenarios and the gap is unbounded by
+that figure: m4b constructs two symbols with opposite loadings where the
+per-symbol bound is 24,000 against a best single scenario of 20,000, an excess
+of 4,000 on 20 lots. The bound stays safe; the tightness statement does not
+generalise and is not written as though it does.
+
+`Gateway.reprice` recomputes the cached gross after a mark move. The
+per-scenario aggregates are built from beta and scan and do not move with the
+mark; `gross_wf` does, and it is maintained incrementally.
+
+### The unwind is an internal transfer, not orders on the books
+
+Reducing one leg at a time does not work. On a hedged book, closing one leg
+while its offset stays put raises the account's requirement, which is c9 with
+the liquidator in the gateway's place: l3 measures the requirement going from 0
+to 2,000 on a single-leg proposal and staying at 0 on a proportional basket.
+
+That forces the basket, and the basket forces an architecture decision. Ordinary
+matching here is sharded by symbol. A basket spanning several symbols cannot
+fill atomically across several order books, and a partial fill on one shard with
+none on another leaves the account somewhere the check never approved. This
+repository does not assume an atomicity the matching path does not have, and it
+does not route baskets through that path.
+
+**The choice made is a central internal transfer.** The liquidator prices the
+whole basket against the venue's own marks, inside the same band and fee cap an
+ordinary fill is held to, and `Sequencer.commit_basket` writes it as one log
+record. Either the record is there and the whole basket happened, or it is not
+and none of it did; there is no state in which half a basket exists. The cost is
+that the venue is the counterparty to the transfer, and that is a venue
+mechanism rather than a matching-engine property. Nothing in the code or the
+paper claims sharded matching supports atomic cross-symbol baskets.
+
+Recovery follows from the same record. A crash between the ordering point
+committing the basket and the transfer being folded in locally leaves the local
+state behind the log; a rebuild from the log is what the position actually is,
+and `applied_baskets` plus the ledger's fill keys make the reapplication land
+once (l14, and `basket_replayed` in E7). A retry under the same basket
+identifier with the same payload is idempotent; the same identifier with
+different figures is refused and moves nothing (l7).
+
+### The liquidator is a trusted component, and the code says so
+
+Its orders are checked against the merged account rather than against a ceiling,
+because c9 already showed a gateway cannot make that judgement on its own. So
+nothing in the capacity accounting bounds it. The alternative, putting it under
+an ordinary lease, does not work: the account is in shortfall exactly when the
+solve is infeasible and an ordinary lease would be issued in quarantine.
+
+The check is on the two merged envelopes, not entry by entry on the scenario
+vector, and the reason is written into the code because the fuzz oracle uses the
+entry-by-entry form for what looks like the same thing. There the quantity
+compared is the shortfall at each scenario and `E(k)` moves with the admission,
+so the vector can rotate under a fixed maximum. Here the basket is priced and
+committed in one step, `E(k)` does not move with an unfilled order because there
+is no unfilled order, and the requirement depends on the vector only through its
+maximum. Entry by entry would also be wrong rather than merely strict: buying to
+close a short raises the vector at the scenarios where the buy loses, which are
+exactly the scenarios where the short gains.
+
+Its execution cost is not reserved for by the debit envelope, which was sized
+for the order set that existed before the trigger. What bounds it is arithmetic:
+it only reduces, so it trades at most the reachable position, at most
+`sum_s lots_s * (band_s + fee_s)`. Taken over the *filled* position that bound
+was wrong and E6 measured the realised cost 90 above it, because orders admitted
+before the trigger keep filling during the delay. Taken over the worst-fill
+reachable position it holds.
+
+### The settlement barrier
+
+A seal is the portable evidence for releasing **one** lease: a holder carries it
+to the allocator. The account-wide compaction is a different path and does not
+use one, because the allocator reads the same authoritative log the seal was cut
+from. An undelivered seal therefore does not freeze an account's capacity. What
+the safety rests on is not the seal; it is the terminal fence the ordering point
+has already recorded.
+
+Why it is needed at all: committed exposure is tracked per holder and the
+figures are summed. While any holder can still admit that has to be an
+over-approximation, because the allocator cannot see what an unreachable holder
+is doing. After a liquidation the sum is wrong in the other direction. Each
+ingress lease reconciles to its own gross short, the offsetting longs sit under
+the liquidator's basket, and an account holding nothing still looks fully
+occupied (l9: per-lease figures summing to a positive risk figure against an
+account figure of zero). Before this existed, E7 measured `seal_undelivered`
+being handed *more* capacity than the base run, which is what made the defect
+visible.
+
+`Allocator.settle` requires all of the following, and none of them is supplied
+by the caller:
+
+1. the account is in `settling`, so `issue` returns nothing for it;
+2. every lease ever minted for the account is fenced at the ordering point:
+   every ingress lease, every incarnation, and the liquidator's basket
+   authority. `all_leases` is the set the barrier is taken over, not
+   `authority`, because a lease that admitted nothing is still authority;
+3. a barrier watermark `B` is established at which the recorded sequence under
+   each of those leases is gap-free and no admission or basket for the account
+   was recorded under a lease outside the set;
+4. `Sequencer.reconcile_account(B)` rebuilds, from the log alone, the filled
+   positions, the orders with no authoritative cancel acknowledgement, the
+   worst-fill risk, the repriced gross reach, and the execution cost still ahead
+   of the account;
+5. the result is installed under a credit-version compare-and-set, so a
+   settlement computed at an older barrier cannot overwrite a newer one;
+6. issuance resumes only after the install.
+
+The gap-free check should never fire, because `submit` and `commit_basket`
+already refuse anything but the next number. It is there because the
+settlement's whole claim is that the log is complete, and an assertion that
+never fires is cheap next to a claim that is assumed.
+
+An earlier version of this method took the merged occupancy as an argument. That
+is the same interface defect the worst-fill round closed in `release`: a correct
+fence paired with an optimistic usage claim would have been accepted. It does
+not take one now.
+
+### Two ways a cancel fails, which are not the same fact
+
+    notification lost      the ordering point recorded the cancel and the news
+                           never reached the gateway. Nothing can fill against
+                           that order. The settlement releases it; only the
+                           local view is stale.
+    never acknowledged     the matching side never confirmed, so there is no
+                           record anywhere. The order is still live and still
+                           able to fill. The settlement keeps its worst-fill
+                           risk and the execution cost still ahead of it.
+
+Fencing does not help in the second case. A fence stops new admissions and does
+nothing to an order already resting. l12 and l13 pin them separately, and E7
+runs them as separate faults, because collapsing them into one name would let a
+run that released nothing look identical to one that released everything: the
+difference is not in what the gateways show but in what the log holds. In E7
+both arms show one order live at the end; the settlement figure is `(0, 0, 0)`
+for the recorded cancel and `(120, 2232, 9)` for the unacknowledged one, and the
+capacity afterwards is 135,851 against 135,656.
+
+### E6, a liquidation and insurance-loss experiment
+
+This is not a demonstration that the pre-trade invariant held. At the moment the
+run starts measuring, the account is already 738 short of its requirement: the
+market has moved further than the grid covers, which is the only way that state
+is reachable. The credit event has happened. What is measured is how much of it
+the venue wears once the account's own equity is gone, which is a draw on an
+insurance fund. The account itself loses the whole of drift, slippage and fees
+in every row, including the rows where the draw is zero.
+
+Equity is decomposed exactly and the identity is asserted on integers with no
+tolerance:
+
+    ending equity == trigger equity + drift - slippage - fees
+
+Seeds are fixed in the file: `seed=1` for every row, drift rate 40/1000 of the
+widest scenario step per tick except in Part C, cancel round trip one tick,
+unwind 40 lots per transfer, gateway 1 partitioned from tick 0 and never
+reissued to.
+
+Command and recorded output:
+
+    $ python3 experiments/e6_liquidation_delay.py
+    trigger: tick 96, equity 121382, requirement 122120, shortfall 738, 0 orders still live
+    drift rate 40/1000 of the widest scenario step per tick; cancel round trip 1 tick; unwind 40 lots per tick
+
+    Part A - detection delay, account fenced at the trigger
+                 delay      drift  slip rest  slip unw    fees  admitted  end equity     draw  id
+         fenced      0     -16444          0     -1802    -720         0      102416        0  ok
+         fenced      1     -19320          0     -1802    -720         2       99540        0  ok
+         fenced      2     -22252        -24     -1814    -728         4       96564        0  ok
+         fenced      4     -28292        -90     -1836    -744         8       90420        0  ok
+         fenced      8     -40360       -197     -1863    -764        16       78198        0  ok
+         fenced     16     -65276       -612     -1978    -840        32       52676        0  ok
+         fenced     32    -116932      -1101     -2155    -956        64         238        0  ok
+         fenced     64    -229708      -2726     -2544   -1216       128     -114812   114812  ok
+
+    Part B - the same runs with the leases left live
+                 delay      drift  slip rest  slip unw    fees  admitted  end equity     draw  id
+       unfenced      0     -20632      -4202     -2980   -1488       194       92080        0  ok
+       unfenced      1     -23304      -4317     -2967   -1484       195       89310        0  ok
+       unfenced      2     -26068      -4309     -2971   -1484       195       86550        0  ok
+       unfenced      4     -32636      -4309     -2967   -1484       195       79986        0  ok
+       unfenced      8     -44884      -4252     -2958   -1480       197       67808        0  ok
+       unfenced     16     -69544      -4341     -2963   -1484       195       43050        0  ok
+       unfenced     32    -120236      -4172     -2958   -1480       197       -7464     7464  ok
+       unfenced     64    -231656      -4368     -2946   -1480       196     -119068   119068  ok
+
+    Part C - the drift component against the rate, at a fixed delay of 8 ticks
+           rate      drift  execution  end equity     loss
+             10      -9992      -2789      108601        0
+             20     -20148      -2820       98414        0
+             40     -40360      -2824       78198        0
+             80     -80197      -3027       38110        0
+            160    -159961      -3344      -41995    41995
+
+    columns are signed as they enter equity: drift is what the market took, the others are
+    what execution cost. 'draw' is the draw on an insurance fund, which is what is left
+    after the account's own equity is gone; the account itself has lost the whole of
+    drift, slippage and fees in every row.
+
+    required buffer, measured: equity at the trigger less equity at the end.
+    These are figures from this configuration and this seed, not a bound.
+                 delay     buffer                       identity
+         fenced      0      18966  121382    -16444   -1802  -720 = 102416
+         fenced      1      21842  121382    -19320   -1802  -720 = 99540
+         fenced      2      24818  121382    -22252   -1838  -728 = 96564
+         fenced      4      30962  121382    -28292   -1926  -744 = 90420
+         fenced      8      43184  121382    -40360   -2060  -764 = 78198
+         fenced     16      68706  121382    -65276   -2590  -840 = 52676
+         fenced     32     121144  121382   -116932   -3256  -956 = 238
+         fenced     64     236194  121382   -229708   -5270 -1216 = -114812
+
+    over part A: drift runs from -16444 to -229708; execution cost from -2522 to -6486
+
+    unwind cost against the bound over the reachable position, worst of each set (negative is inside):
+         fenced: measured at the trigger     990, measured when authority ends       0
+       unfenced: measured at the trigger    1562, measured when authority ends    1562
+    unfenced runs that never reached flat: []
+    orders admitted after the trigger: fenced 254, unfenced 1564
+
+    the decomposition accounts for the whole equity change in every run
+
+The required-buffer column is a measurement of this configuration and this seed.
+It is not a bound and not a probabilistic guarantee.
+
+What the mechanism bounds and what it does not is the point of the table.
+Execution cost across Part A runs from 2,522 to 6,486 while drift runs from
+16,444 to 229,708. The unwind cost sits inside the bound taken over the
+reachable position **when authority ends** (worst 0 across the fenced runs, so
+it saturates exactly) and outside any bound taken at the trigger (worst 990),
+because everything admitted during the detection delay is inside the first and
+outside the second. In the unfenced arm there is no moment at which authority
+ends and the cost exceeds the bound by 1,562.
+
+### E7, faults injected into the same path
+
+The base is the fenced arm at a 32-tick delay, which E6 shows finishing with 226
+of equity left. A fault matrix run comfortably inside its buffer absorbs
+everything and says nothing, so the base is put where a fault has room to
+matter.
+
+    $ python3 experiments/e7_operational_faults.py
+    base run: trigger at tick 96, equity 121382, shortfall 738; detection delay 32 ticks, cancel round trip 1 tick, unwind 40 lots per transfer
+
+                         fault  flat  live  steps     drift  execution  end equity    draw  refused  M up b/o  id
+                          none  True     0     24   -116620      -4536         226       0        0    0/15    ok
+                      no_fence  True     0     75   -120316      -8856       -7790    7790        0    0/64    ok
+             fence_undelivered  True     0     24   -116620      -4536         226       0       50    0/15    ok
+      cancel_notification_lost  True     1     24   -116620      -4536         226       0        0    0/16    ok
+     cancel_never_acknowledged  True     1     24   -116620      -4536         226       0        0    0/16    ok
+     liquidator_authority_live  True     0     24   -116620      -4536         226       0        0    0/15    ok
+              liquidator_crash  True     0     24   -116620      -4536         226       0        0    0/14    ok
+                 ingress_crash  True     0     24   -116620      -4536         226       0        0    0/15    ok
+              seal_undelivered  True     0     24   -116620      -4536         226       0        0    0/15    ok
+               basket_replayed  True     0     24   -116620      -4536         226       0        0    0/15    ok
+                     late_fill  True     0     24   -116632      -4566         184       0        0    0/15    ok
+
+    'live' is orders still able to fill at the end. 'refused' counts submissions the ordering
+    point turned away. 'M up b/o' counts steps after which the merged requirement rose:
+    first from the liquidator's own basket, then from everything else in the tick.
+
+    settlement:
+                            none: settled  True, account figure (risk, gross, debit) (0, 0, 0), capacity afterwards 135851
+                        no_fence: settled False, account figure (risk, gross, debit) (0, 0, 0), capacity afterwards 5
+               fence_undelivered: settled  True, account figure (risk, gross, debit) (0, 0, 0), capacity afterwards 135851
+        cancel_notification_lost: settled  True, account figure (risk, gross, debit) (0, 0, 0), capacity afterwards 135851
+       cancel_never_acknowledged: settled  True, account figure (risk, gross, debit) (120, 2232, 9), capacity afterwards 135656
+       liquidator_authority_live: settled False, account figure (risk, gross, debit) (0, 0, 0), capacity afterwards 135851
+                liquidator_crash: settled  True, account figure (risk, gross, debit) (0, 0, 0), capacity afterwards 135851
+                   ingress_crash: settled  True, account figure (risk, gross, debit) (0, 0, 0), capacity afterwards 135851
+                seal_undelivered: settled  True, account figure (risk, gross, debit) (0, 0, 0), capacity afterwards 135851
+                 basket_replayed: settled  True, account figure (risk, gross, debit) (0, 0, 0), capacity afterwards 135851
+                       late_fill: settled  True, account figure (risk, gross, debit) (0, 0, 0), capacity afterwards 135851
+
+    reason, where the settlement did not run on the first attempt:
+                        no_fence: authority_still_live:[1, 2]
+       liquidator_authority_live: authority_still_live:[3]
+
+    cancel outcomes and per-lease reconciliation:
+                            none: recorded-only 0, never acknowledged 0, per-lease reconciliation refused for none
+                        no_fence: recorded-only 0, never acknowledged 0, per-lease reconciliation refused for none
+               fence_undelivered: recorded-only 0, never acknowledged 0, per-lease reconciliation refused for none
+        cancel_notification_lost: recorded-only 1, never acknowledged 0, per-lease reconciliation refused for none
+       cancel_never_acknowledged: recorded-only 0, never acknowledged 1, per-lease reconciliation refused for none
+       liquidator_authority_live: recorded-only 0, never acknowledged 0, per-lease reconciliation refused for none
+                liquidator_crash: recorded-only 0, never acknowledged 0, per-lease reconciliation refused for none
+                   ingress_crash: recorded-only 0, never acknowledged 0, per-lease reconciliation refused for none
+                seal_undelivered: recorded-only 0, never acknowledged 0, per-lease reconciliation refused for ['1']
+                 basket_replayed: recorded-only 0, never acknowledged 0, per-lease reconciliation refused for none
+                       late_fill: recorded-only 0, never acknowledged 1, per-lease reconciliation refused for none
+
+    recovery and idempotence:
+                liquidator_crash: recovery checks 1, failures 0, duplicate baskets that moved the position 0, fills accepted under a fenced lease 0
+                   ingress_crash: recovery checks 1, failures 0, duplicate baskets that moved the position 0, fills accepted under a fenced lease 0
+                       late_fill: recovery checks 0, failures 0, duplicate baskets that moved the position 0, fills accepted under a fenced lease 1
+
+    unwind cost against the bound taken when authority ends:
+                            none: bound 3038, over by -9
+                        no_fence: bound 3038, over by 1023
+               fence_undelivered: bound 3038, over by -9
+        cancel_notification_lost: bound 3038, over by -9
+       cancel_never_acknowledged: bound 3038, over by -9
+       liquidator_authority_live: bound 3038, over by -9
+                liquidator_crash: bound 3038, over by -9
+                   ingress_crash: bound 3038, over by -9
+                seal_undelivered: bound 3038, over by -9
+                 basket_replayed: bound 3038, over by -9
+                       late_fill: bound 3038, over by 0
+      note (none): settle: True (settled at barrier 875: risk 0, gross 0, debit 0)
+      note (no_fence): settle: False (authority_still_live:[1, 2])
+      note (fence_undelivered): settle: True (settled at barrier 875: risk 0, gross 0, debit 0)
+      note (cancel_notification_lost): settle: True (settled at barrier 875: risk 0, gross 0, debit 0)
+      note (cancel_never_acknowledged): 1 orders left with no cancel acknowledgement and no fill
+      note (cancel_never_acknowledged): settle: True (settled at barrier 874: risk 120, gross 2232, debit 9)
+      note (liquidator_authority_live): settle: False (authority_still_live:[3])
+      note (liquidator_authority_live): settle after fencing the liquidator: True (settled at barrier 875: risk 0, gross 0, debit 0)
+      note (liquidator_crash): rebuilt from the log after the crash: position {'A': 120, 'B': 19}
+      note (liquidator_crash): settle: True (settled at barrier 875: risk 0, gross 0, debit 0)
+      note (ingress_crash): settle: True (settled at barrier 875: risk 0, gross 0, debit 0)
+      note (seal_undelivered): settle: True (settled at barrier 875: risk 0, gross 0, debit 0)
+      note (basket_replayed): settle: True (settled at barrier 875: risk 0, gross 0, debit 0)
+      note (late_fill): a fill under a fenced lease: True (ok)
+      note (late_fill): settle: True (settled at barrier 875: risk 0, gross 0, debit 0)
+
+    no fault broke the equity identity, produced a divergent recovery, landed a duplicate basket,
+    or let the liquidator's own basket raise the requirement. The settlement ran exactly where
+    it should and refused exactly where it should.
+
+Reading it: every fault except `no_fence` finishes at the same place.
+`no_fence` draws 7,790 on the insurance fund, takes 75 transfers instead of 24,
+and cannot settle at all. `fence_undelivered` has the ordering point turn away
+50 submissions and is otherwise identical to the base, which is the quantified
+form of the claim that a fence does not have to reach the gateway.
+`seal_undelivered` settles, and `liquidator_authority_live` does not until the
+liquidator is fenced.
+
+### Regression
+
+    test_account                14 of 14 properties hold
+    test_algebra                admission bound held on every sample
+    test_counterexamples        16 of 16 properties hold
+    test_execution_debit         7 of 7 properties hold
+    test_lifecycle_fuzz         no admission worsened any scenario
+    test_liquidation            14 of 14 properties hold
+    test_recovery                6 of 6 properties hold
+    test_repricing               6 of 6 properties hold
+    test_worst_fill              6 of 6 properties hold
+    test_worst_fill_exhaustive  closed form equals enumeration on every trial
+
+`test_execution_debit` is the file that carries the previous round's three
+items and it still passes at 7 of 7: d1 to d3 cover the envelope and the
+cross-generation debit baseline, d4 refuses a fee above the policy cap, d5
+refuses a fill outside the policy band, d6 lands a retried fill under the same
+identifier once, and d7 shows execution cost already inside equity ceasing to
+occupy the envelope.
+
+### Housekeeping
+
+`experiments/e1_safety.py`, `e1_worst_fill_safety.py`, `e2_negative.py`,
+`e4_conditional.py` and `e5_adversarial.py` have moved to
+`experiments/superseded/`. They target interfaces the mechanism has moved off
+and one of them raises on import of a signature that changed two rounds ago; a
+clean-room run of `experiments/e*.py` found it. Their recorded output stays in
+this file as history. The current set is `e1` through `e7`.
+
+### Still open
+
+- The allocator's own snapshot and failover. The gateway, the account and now
+  the settlement path are covered; the allocator is not.
+- The liquidator is inside the trusted computing base on its own account. A
+  compromised one can churn the account subject only to the non-increase check,
+  and therefore incur arbitrary execution cost.
+- Section 6.1's blast-radius claim still needs replacing with an admission that
+  the gateway is inside the trusted computing base.
+- `paper/` was written before any of this and still describes the mechanism as
+  it was three rounds ago.

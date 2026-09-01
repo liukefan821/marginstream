@@ -8,8 +8,9 @@ comparing, rather than by argument.
            against  max(0, ceil(max_k [loss_k(filled)
                                        + sum_i max(0, loss_k(order_i))] / DEN))
 
-    gross  max over subsets S of gross(filled + sum of S)
-           against  sum_s mark_s * max(|f_s + buy_s|, |f_s - sell_s|)
+    gross  max over subsets S of gross_reach(filled + sum of S)
+           against  sum_s mark+_s * max(|f_s + buy_s|, |f_s - sell_s|)
+           where mark+_s is the highest mark s reaches in the grid
 
 Integers throughout, seeds fixed. Failures print the portfolio that produced
 them.
@@ -51,7 +52,7 @@ def closed_form_gross(risk, filled, orders):
             sell[sym] = sell.get(sym, 0) - qty
     total = 0
     for sym in set(filled) | set(buy) | set(sell):
-        mark = risk.symbols[sym].mark
+        mark = risk.mark_plus(sym)
         f = filled.get(sym, 0)
         total += mark * max(abs(f + buy.get(sym, 0)),
                             abs(f - sell.get(sym, 0)))
@@ -69,7 +70,7 @@ def brute_force(risk, filled, orders):
                 sym, qty = orders[i]
                 pos[sym] = pos.get(sym, 0) + qty
         r = risk.R(pos)
-        g = risk.gross(pos)
+        g = risk.gross_reach(pos)
         if r > worst_r:
             worst_r = r
         if g > worst_g:

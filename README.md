@@ -65,3 +65,13 @@ A given `(seed, Config)` reproduces the same counters.
 - The ledger module (hold and lease are separate concepts; only the lease side
   is implemented).
 - Matching. Shards hold positions; they do not match orders against a book.
+
+## Running everything
+
+    python3 --version                                  # 3.12.3 used for the recorded output
+    for t in tests/test_*.py; do python3 "$t"; done
+    for e in experiments/e*.py; do python3 "$e"; done
+
+Every file exits 0 on success. `REPRODUCE.md` carries the recorded output of
+each round, the failure modes found while building it, and the claims that were
+withdrawn.

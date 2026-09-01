@@ -90,8 +90,86 @@ class RiskModel:
 
     # ---- add-on term ---------------------------------------------------
 
+    # ---- marks -----------------------------------------------------------
+
+    def max_move(self, name):
+        """The furthest this symbol's mark can travel inside the scenario set.
+
+        `dp(f) = beta * f * scan / DEN`, so the largest displacement over the
+        grid is at the widest factor value. Rounded up.
+        """
+        sym = self.symbols[name]
+        widest = max(abs(f) for f in self.grid)
+        return self.ceil_div(abs(sym.beta) * widest * sym.scan, self.DEN)
+
+    def mark_plus(self, name):
+        """The highest mark this symbol reaches at any scenario in the grid.
+
+        This is what an *envelope* is measured at. A lease is solved once and
+        then admits orders for a term over which the marks move, so the gross
+        notional it has to reserve for is the largest the position can reach
+        inside the grid, not the figure standing when the solve ran. Measuring
+        the reserve at the current mark is what tests/test_repricing.py m1
+        breaks.
+
+        The *requirement* is a different object and is not measured here: it is
+        what the account owes at the marks in force, so it uses `gross`. The
+        two meet in the safety argument, where the requirement after a move is
+        bounded by the reserve taken before it.
+
+        This is the per-symbol maximum, and it is an upper bound on the
+        per-scenario maximum `max_f sum_s |q_s| (mark_s + dp_s(f))` in every
+        case. How loose it is depends on the factor model and is not a general
+        property:
+
+        - With one factor and non-negative loadings, which is the model
+          configured everywhere in this repository, every symbol reaches its
+          highest mark at the same f, so the two coincide up to the rounding:
+          `max_move` rounds up while the displacement rounds down, leaving at
+          most one minor unit per lot. m4a measures that.
+        - With signed loadings, or with several factors, different symbols
+          reach their highest mark at different scenarios and the per-symbol
+          sum can exceed any single scenario's gross by an arbitrary margin.
+          m4b constructs that case and measures it, so the limitation is
+          established rather than noted.
+
+        The bound is still safe in both cases. It is only the tightness claim
+        that is scoped to the single-factor model.
+        """
+        return self.symbols[name].mark + self.max_move(name)
+
+    def reprice(self, marks):
+        """Move the marks. Anything holding a cached gross figure has to
+        recompute it; `Gateway.reprice` is that path."""
+        import dataclasses
+        for name, mark in marks.items():
+            self.symbols[name] = dataclasses.replace(self.symbols[name],
+                                                     mark=mark)
+
+    def displaced_marks(self, f, den=1):
+        """The marks at factor value `f / den`. `den` lets a caller ask for a
+        move part-way to a grid point, or past the widest one."""
+        out = {}
+        for name, sym in self.symbols.items():
+            dp = (sym.beta * f * sym.scan) // (self.DEN * den)
+            out[name] = sym.mark + dp
+        return out
+
+    # ---- gross -----------------------------------------------------------
+
     def gross(self, positions):
+        """Gross notional at the marks in force. This is the argument the
+        add-on takes when the requirement is computed."""
         return sum(abs(q) * self.symbols[n].mark for n, q in positions.items())
+
+    def gross_reach(self, positions):
+        """Gross notional at the highest marks the grid allows. This is the
+        argument the add-on takes when capacity is reserved."""
+        return sum(abs(q) * self.mark_plus(n) for n, q in positions.items())
+
+    def gross_at_marks(self, positions, marks):
+        """Gross at a given set of marks."""
+        return sum(abs(q) * marks[n] for n, q in positions.items())
 
     def A_num(self, gross):
         """Add-on numerator, exact. Convex, zero at zero, and super-additive

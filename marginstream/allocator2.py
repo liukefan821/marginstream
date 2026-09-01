@@ -126,6 +126,19 @@ class Allocator:
         self.sealed_sum = {}      # account -> holder -> summed sealed usage
         self.retired = {}         # account -> set of holders not to be issued to
         self.credit_version = {}  # account -> version, bumped on a credit change
+        # lease ids minted for a liquidator. kept apart from `authority`
+        # because they are not capacity; see issue_liquidation_lease.
+        self.liquidation_leases = {}
+        # every lease id ever minted for an account, ingress and liquidator.
+        # the barrier is taken over this set, not over what is still in
+        # `authority`: a lease that admitted nothing is still authority.
+        self.all_leases = {}
+        # accounts whose issuance is suspended while a settlement runs
+        self.settling = set()
+        # the barrier each installed settlement was computed at, and the
+        # execution cost that settlement left unreserved
+        self.settled_barrier = {}
+        self.settled_debit = {}
         self._next_lease_id = 1
 
     # ---- state -----------------------------------------------------------
@@ -211,6 +224,93 @@ class Allocator:
         del auth[lease_id]
         return True, "released"
 
+    def begin_settling(self, account):
+        """Suspend issuance for an account and return the credit version the
+        settlement will be installed against.
+
+        Issuance has to stop first. Otherwise a lease minted after the barrier
+        was taken is authority the settlement did not account for, and the
+        compacted figure would be installed against a set of holders that has
+        already changed.
+        """
+        self.settling.add(account)
+        return self.credit_version.get(account, 0)
+
+    def settle(self, account, sequencer, risk=None, if_credit_version=None):
+        """Compact per-holder committed exposure into the account's own figure.
+
+        Committed exposure is tracked per holder and the figures are summed.
+        While any holder can still admit, that has to be an over-approximation:
+        the allocator cannot see what an unreachable holder is doing, so a
+        position one holder created cannot be assumed to offset a position
+        another one created. After a liquidation the sum is badly wrong in the
+        other direction: each lease reconciles to its own gross leg, the
+        offsetting legs sit under the liquidator's lease, and an account that
+        holds nothing still looks fully occupied.
+
+        A seal is the portable evidence for releasing **one** lease: a holder
+        carries it to the allocator. This is the account-wide path and it does
+        not use one, because the allocator reads the same authoritative log the
+        seal was cut from. A seal that never arrives therefore does not freeze
+        the account's capacity. What the safety rests on is not the seal but
+        the terminal fence the ordering point has already recorded.
+
+        Every one of these has to hold, and none of them is supplied by the
+        caller:
+
+        1. the account is in `settling`, so no new lease can be issued;
+        2. every lease ever minted for the account is fenced at the ordering
+           point: every ingress lease, every incarnation, and the liquidator's
+           basket authority. A liquidator that can still commit a basket is
+           live authority like any other;
+        3. a barrier watermark `B` is established, at which the recorded
+           sequence under each of those leases is gap-free and no admission or
+           basket for the account was recorded under any lease outside the set;
+        4. `Sequencer.reconcile_account(B)` rebuilds, from the log alone, the
+           filled positions, the orders with no authoritative cancel
+           acknowledgement, the worst-fill risk, the repriced gross reach, and
+           the execution cost still ahead of the account;
+        5. the result is installed under a credit-version compare-and-set, so a
+           settlement computed at an older barrier cannot overwrite a newer
+           one;
+        6. issuance resumes only after the install.
+
+        No occupancy figure is accepted as an argument. An earlier version of
+        this method took one, which is the interface defect the worst-fill
+        round closed in `release`: a correct fence paired with an optimistic
+        usage claim would have been accepted.
+        """
+        if account not in self.settling:
+            return False, "not_settling"
+        if (if_credit_version is not None
+                and if_credit_version != self.credit_version.get(account, 0)):
+            return False, "credit_version_moved"
+
+        leases = self.all_leases.get(account, set())
+        ok, barrier, why = sequencer.barrier(account, leases)
+        if not ok:
+            return False, why
+
+        prior = self.settled_barrier.get(account)
+        if prior is not None and barrier < prior:
+            return False, f"stale_barrier:{barrier}<{prior}"
+
+        r, g, d = sequencer.reconcile_account(
+            account, risk if risk is not None else self.risk, barrier=barrier)
+
+        auth = self._auth(account)
+        for lid in list(auth):
+            del auth[lid]
+        holder = ("settled", 0)
+        self.committed[account] = {holder: (r, g)}
+        self.sealed_sum[account] = {holder: (r, g)}
+        self.watermark[account] = {}
+        self.settled_debit[account] = d
+        self.settled_barrier[account] = barrier
+        self.credit_version[account] = self.credit_version.get(account, 0) + 1
+        self.settling.discard(account)
+        return True, f"settled at barrier {barrier}: risk {r}, gross {g}, debit {d}"
+
     def retire(self, account, gateway):
         """Stop issuing to a holder.
 
@@ -284,7 +384,8 @@ class Allocator:
         ceilings = self._ceilings(account, scale, weights)
         risk_total, gross_total = self._bounds(account, ceilings, now)
         den = self.risk.A_den()
-        lhs = ((2 * risk_total + self.debit_of(risk_total) + self.residual)
+        lhs = ((2 * risk_total + self.debit_of(risk_total) + self.residual
+                + self.settled_debit.get(account, 0))
                * den + self.risk.A_num(gross_total))
         return lhs <= collateral * den
 
@@ -319,6 +420,8 @@ class Allocator:
         risk from that state needs a check against the whole account, which a
         gateway cannot perform on its own.
         """
+        if account in self.settling:
+            return {}, None
         if floors or gross_floors:
             f = floors or {}
             gf = gross_floors or {}
@@ -350,6 +453,7 @@ class Allocator:
             debit_curve = tuple(self.debit_of(r) for r in risk_curve)
             lid = self._next_lease_id
             self._next_lease_id += 1
+            self.all_leases.setdefault(account, set()).add(lid)
             out[g] = Lease(account, self.epoch, gen, h[0], h[1],
                            now + self.ttl, mode, risk_curve, gross_curve,
                            debit_curve, lease_id=lid, credit_version=cv)
@@ -363,6 +467,33 @@ class Allocator:
             g: lz.risk_amount for g, lz in out.items()
         }
         return out, scale
+
+    def issue_liquidation_lease(self, account, gateway, incarnation=0, now=0,
+                                ttl=10 ** 9):
+        """A lease for the liquidator.
+
+        Its ceilings are not solved for, and it is deliberately kept out of
+        `authority`, so `_bounds` does not count it. The justification is that
+        the liquidator's orders are checked against the merged account and
+        refused unless the merged scenario vector and the merged gross both
+        fail to rise, so nothing it admits can raise the account's exposure.
+        Everything the capacity accounting does is about bounding an increase.
+
+        The price of that is stated rather than mitigated: the liquidator is a
+        trusted component. A compromised one can trade the account subject only
+        to the non-increase check, which permits arbitrary churn and therefore
+        arbitrary execution cost.
+        """
+        cap = 1 << 62
+        lid = self._next_lease_id
+        self._next_lease_id += 1
+        gen = self.generation.get(account, 0)
+        lz = Lease(account, self.epoch, gen, gateway, incarnation,
+                   now + ttl, "normal", (cap,), (cap,), (cap,),
+                   lease_id=lid, credit_version=self.credit_version.get(account, 0))
+        self.liquidation_leases.setdefault(account, []).append(lid)
+        self.all_leases.setdefault(account, set()).add(lid)
+        return lz
 
     def advance_epoch(self):
         self.epoch += 1

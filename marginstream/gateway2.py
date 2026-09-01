@@ -84,6 +84,8 @@ class Gateway:
         self.recovering = False
         # highest log position folded in, so a repeated slice is absorbed
         self.log_high_water = 0
+        # baskets already folded, so a retry of the same transfer lands once
+        self.applied_baskets = set()
 
     # ---- state helpers ---------------------------------------------------
 
@@ -105,7 +107,7 @@ class Gateway:
             tally.pop(sym, None)
 
     def _symbol_gross(self, st, sym):
-        mark = self.risk.symbols[sym].mark
+        mark = self.risk.mark_plus(sym)
         f = st.filled.get(sym, 0)
         b = st.buy_rem.get(sym, 0)
         s = st.sell_rem.get(sym, 0)
@@ -146,7 +148,7 @@ class Gateway:
                 sell[extra_sym] = sell.get(extra_sym, 0) - extra_qty
         total = 0
         for sym in set(st.filled) | set(buy) | set(sell):
-            mark = self.risk.symbols[sym].mark
+            mark = self.risk.mark_plus(sym)
             f = st.filled.get(sym, 0)
             total += mark * max(abs(f + buy.get(sym, 0)),
                                 abs(f - sell.get(sym, 0)))
@@ -339,6 +341,42 @@ class Gateway:
         st.debit_reserved -= abs(remaining) * self.risk.debit_per_lot(symbol)
         return True, "cancelled"
 
+    # ---- atomic transfers ------------------------------------------------
+
+    def apply_basket(self, account, basket_id, legs):
+        """Fold one committed basket into the filled position.
+
+        A basket never rests. It is an internal transfer that the ordering
+        point has already committed as a single record, so there is no window
+        in which some of its legs are live orders and the worst-fill envelope
+        has to cover them.
+        """
+        if basket_id in self.applied_baskets:
+            return False, "already_applied"
+        self.applied_baskets.add(basket_id)
+        st = self._st(account)
+        for sym, qty, _price, _fee in legs:
+            before = self._symbol_gross(st, sym)
+            part = self._order_vector(sym, qty)
+            for k in range(self.n_scen):
+                st.filled_num[k] += part[k]
+            self._bump(st.filled, sym, qty)
+            st.gross_wf += self._symbol_gross(st, sym) - before
+        return True, "applied"
+
+    # ---- repricing -------------------------------------------------------
+
+    def reprice(self):
+        """Recompute the cached gross figures after the model's marks moved.
+
+        `filled_num` and `pos_part_num` are built from beta and scan and do not
+        move with the mark. `gross_wf` does, and it is maintained incrementally,
+        so a mark change leaves it stale until this runs. One pass over the
+        symbols each account touches.
+        """
+        for _acct, st in self.state.items():
+            st.gross_wf = self._gross_wf_fullscan(st)
+
     # ---- reporting -------------------------------------------------------
 
     def observe_market_state(self, account, state, now=0):
@@ -368,6 +406,25 @@ class Gateway:
 
     def filled_positions(self, account):
         return dict(self._st(account).filled)
+
+    def exposure_parts(self, account):
+        """Filled position and unfilled quantity on each side, per symbol.
+
+        These are the pieces the worst-fill gross formula needs. They are
+        returned rather than the gateway's own figure because merging across
+        gateways has to happen on the parts: two gateways' worst-fill gross
+        figures do not add, since a buy at one and a sell at the other net
+        inside the account.
+        """
+        st = self._st(account)
+        return dict(st.filled), dict(st.buy_rem), dict(st.sell_rem)
+
+    def scenario_parts(self, account):
+        """Per-scenario loss numerators of the filled position and of the
+        positive parts of the live orders. These do add across gateways,
+        because the loss under a scenario is linear in positions."""
+        st = self._st(account)
+        return list(st.filled_num), list(st.pos_part_num)
 
     def live_orders(self, account):
         return {oid: (sym, rem)
@@ -425,6 +482,7 @@ class Gateway:
             "holder": (self.id, self.incarnation),
             "watermark": wm,
             "admission_seq": dict(self.admission_seq),
+            "applied_baskets": sorted(self.applied_baskets),
             "accounts": {
                 acct: {
                     "filled": dict(st.filled),
@@ -474,6 +532,7 @@ class Gateway:
         self.state = {}
         self.log_high_water = wm
         self.admission_seq = dict(snapshot.get("admission_seq", {}))
+        self.applied_baskets = set(snapshot.get("applied_baskets", []))
         for acct, blob in snapshot.get("accounts", {}).items():
             st = self._st(acct)
             for oid, (sym, rem) in blob.get("orders", {}).items():
@@ -521,6 +580,15 @@ class Gateway:
                         self.fill(acct, oid, qty)
                         applied += 1
                         break
+                else:
+                    skipped += 1
+            elif kind == "basket":
+                _k, _lease, _seq, bid, acct, holder, legs = ev
+                if holder is not None and tuple(holder) != mine:
+                    skipped += 1
+                    continue
+                if self.apply_basket(acct, bid, legs)[0]:
+                    applied += 1
                 else:
                     skipped += 1
             elif kind == "cancel":

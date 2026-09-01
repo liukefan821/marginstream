@@ -1,0 +1,547 @@
+[
+  {
+    "fault": "none",
+    "trigger": {
+      "tick": 96,
+      "equity": 121382,
+      "requirement": 122120,
+      "shortfall": 738
+    },
+    "flat": true,
+    "live_orders_at_end": 0,
+    "unwind_steps": 24,
+    "drift": -116620,
+    "execution_cost": 4536,
+    "equity_end": 226,
+    "identity_ok": true,
+    "identity_gap": 0,
+    "insurance_draw": 0,
+    "debit_bound_at_fence": 3038,
+    "unwind_over_bound": -9,
+    "refused_at_ordering_point": 0,
+    "settled": true,
+    "settle_reason": "settled at barrier 875: risk 0, gross 0, debit 0",
+    "account_view": [
+      0,
+      0,
+      0
+    ],
+    "capacity_after": 135851,
+    "cancels_recorded_only": 0,
+    "cancels_never_acknowledged": 0,
+    "per_lease_reconciliation": {
+      "1": [
+        true,
+        "released"
+      ],
+      "2": [
+        true,
+        "released"
+      ]
+    },
+    "notes": [
+      "settle: True (settled at barrier 875: risk 0, gross 0, debit 0)"
+    ],
+    "requirement_rises_from_the_basket": 0,
+    "requirement_rises_from_everything_else": 15,
+    "recovery_checks": 0,
+    "recovery_failures": 0,
+    "late_fills_accepted": 0,
+    "duplicate_baskets_landed": 0
+  },
+  {
+    "fault": "no_fence",
+    "trigger": {
+      "tick": 96,
+      "equity": 121382,
+      "requirement": 122120,
+      "shortfall": 738
+    },
+    "flat": true,
+    "live_orders_at_end": 0,
+    "unwind_steps": 75,
+    "drift": -120316,
+    "execution_cost": 8856,
+    "equity_end": -7790,
+    "identity_ok": true,
+    "identity_gap": 0,
+    "insurance_draw": 7790,
+    "debit_bound_at_fence": 3038,
+    "unwind_over_bound": 1023,
+    "refused_at_ordering_point": 0,
+    "settled": false,
+    "settle_reason": "authority_still_live:[1, 2]",
+    "account_view": [
+      0,
+      0,
+      0
+    ],
+    "capacity_after": 5,
+    "cancels_recorded_only": 0,
+    "cancels_never_acknowledged": 0,
+    "per_lease_reconciliation": {},
+    "notes": [
+      "settle: False (authority_still_live:[1, 2])"
+    ],
+    "requirement_rises_from_the_basket": 0,
+    "requirement_rises_from_everything_else": 64,
+    "recovery_checks": 0,
+    "recovery_failures": 0,
+    "late_fills_accepted": 0,
+    "duplicate_baskets_landed": 0
+  },
+  {
+    "fault": "fence_undelivered",
+    "trigger": {
+      "tick": 96,
+      "equity": 121382,
+      "requirement": 122120,
+      "shortfall": 738
+    },
+    "flat": true,
+    "live_orders_at_end": 0,
+    "unwind_steps": 24,
+    "drift": -116620,
+    "execution_cost": 4536,
+    "equity_end": 226,
+    "identity_ok": true,
+    "identity_gap": 0,
+    "insurance_draw": 0,
+    "debit_bound_at_fence": 3038,
+    "unwind_over_bound": -9,
+    "refused_at_ordering_point": 50,
+    "settled": true,
+    "settle_reason": "settled at barrier 875: risk 0, gross 0, debit 0",
+    "account_view": [
+      0,
+      0,
+      0
+    ],
+    "capacity_after": 135851,
+    "cancels_recorded_only": 0,
+    "cancels_never_acknowledged": 0,
+    "per_lease_reconciliation": {
+      "1": [
+        true,
+        "released"
+      ],
+      "2": [
+        true,
+        "released"
+      ]
+    },
+    "notes": [
+      "settle: True (settled at barrier 875: risk 0, gross 0, debit 0)"
+    ],
+    "requirement_rises_from_the_basket": 0,
+    "requirement_rises_from_everything_else": 15,
+    "recovery_checks": 0,
+    "recovery_failures": 0,
+    "late_fills_accepted": 0,
+    "duplicate_baskets_landed": 0
+  },
+  {
+    "fault": "cancel_notification_lost",
+    "trigger": {
+      "tick": 96,
+      "equity": 121382,
+      "requirement": 122120,
+      "shortfall": 738
+    },
+    "flat": true,
+    "live_orders_at_end": 1,
+    "unwind_steps": 24,
+    "drift": -116620,
+    "execution_cost": 4536,
+    "equity_end": 226,
+    "identity_ok": true,
+    "identity_gap": 0,
+    "insurance_draw": 0,
+    "debit_bound_at_fence": 3038,
+    "unwind_over_bound": -9,
+    "refused_at_ordering_point": 0,
+    "settled": true,
+    "settle_reason": "settled at barrier 875: risk 0, gross 0, debit 0",
+    "account_view": [
+      0,
+      0,
+      0
+    ],
+    "capacity_after": 135851,
+    "cancels_recorded_only": 1,
+    "cancels_never_acknowledged": 0,
+    "per_lease_reconciliation": {
+      "1": [
+        true,
+        "released"
+      ],
+      "2": [
+        true,
+        "released"
+      ]
+    },
+    "notes": [
+      "settle: True (settled at barrier 875: risk 0, gross 0, debit 0)"
+    ],
+    "requirement_rises_from_the_basket": 0,
+    "requirement_rises_from_everything_else": 16,
+    "recovery_checks": 0,
+    "recovery_failures": 0,
+    "late_fills_accepted": 0,
+    "duplicate_baskets_landed": 0
+  },
+  {
+    "fault": "cancel_never_acknowledged",
+    "trigger": {
+      "tick": 96,
+      "equity": 121382,
+      "requirement": 122120,
+      "shortfall": 738
+    },
+    "flat": true,
+    "live_orders_at_end": 1,
+    "unwind_steps": 24,
+    "drift": -116620,
+    "execution_cost": 4536,
+    "equity_end": 226,
+    "identity_ok": true,
+    "identity_gap": 0,
+    "insurance_draw": 0,
+    "debit_bound_at_fence": 3038,
+    "unwind_over_bound": -9,
+    "refused_at_ordering_point": 0,
+    "settled": true,
+    "settle_reason": "settled at barrier 874: risk 120, gross 2232, debit 9",
+    "account_view": [
+      120,
+      2232,
+      9
+    ],
+    "capacity_after": 135656,
+    "cancels_recorded_only": 0,
+    "cancels_never_acknowledged": 1,
+    "per_lease_reconciliation": {
+      "1": [
+        true,
+        "released"
+      ],
+      "2": [
+        true,
+        "released"
+      ]
+    },
+    "notes": [
+      "1 orders left with no cancel acknowledgement and no fill",
+      "settle: True (settled at barrier 874: risk 120, gross 2232, debit 9)"
+    ],
+    "requirement_rises_from_the_basket": 0,
+    "requirement_rises_from_everything_else": 16,
+    "recovery_checks": 0,
+    "recovery_failures": 0,
+    "late_fills_accepted": 0,
+    "duplicate_baskets_landed": 0
+  },
+  {
+    "fault": "liquidator_authority_live",
+    "trigger": {
+      "tick": 96,
+      "equity": 121382,
+      "requirement": 122120,
+      "shortfall": 738
+    },
+    "flat": true,
+    "live_orders_at_end": 0,
+    "unwind_steps": 24,
+    "drift": -116620,
+    "execution_cost": 4536,
+    "equity_end": 226,
+    "identity_ok": true,
+    "identity_gap": 0,
+    "insurance_draw": 0,
+    "debit_bound_at_fence": 3038,
+    "unwind_over_bound": -9,
+    "refused_at_ordering_point": 0,
+    "settled": false,
+    "settle_reason": "authority_still_live:[3]",
+    "account_view": [
+      0,
+      0,
+      0
+    ],
+    "capacity_after": 135851,
+    "cancels_recorded_only": 0,
+    "cancels_never_acknowledged": 0,
+    "per_lease_reconciliation": {
+      "1": [
+        true,
+        "released"
+      ],
+      "2": [
+        true,
+        "released"
+      ]
+    },
+    "notes": [
+      "settle: False (authority_still_live:[3])",
+      "settle after fencing the liquidator: True (settled at barrier 875: risk 0, gross 0, debit 0)"
+    ],
+    "requirement_rises_from_the_basket": 0,
+    "requirement_rises_from_everything_else": 15,
+    "recovery_checks": 0,
+    "recovery_failures": 0,
+    "late_fills_accepted": 0,
+    "duplicate_baskets_landed": 0
+  },
+  {
+    "fault": "liquidator_crash",
+    "trigger": {
+      "tick": 96,
+      "equity": 121382,
+      "requirement": 122120,
+      "shortfall": 738
+    },
+    "flat": true,
+    "live_orders_at_end": 0,
+    "unwind_steps": 24,
+    "drift": -116620,
+    "execution_cost": 4536,
+    "equity_end": 226,
+    "identity_ok": true,
+    "identity_gap": 0,
+    "insurance_draw": 0,
+    "debit_bound_at_fence": 3038,
+    "unwind_over_bound": -9,
+    "refused_at_ordering_point": 0,
+    "settled": true,
+    "settle_reason": "settled at barrier 875: risk 0, gross 0, debit 0",
+    "account_view": [
+      0,
+      0,
+      0
+    ],
+    "capacity_after": 135851,
+    "cancels_recorded_only": 0,
+    "cancels_never_acknowledged": 0,
+    "per_lease_reconciliation": {
+      "1": [
+        true,
+        "released"
+      ],
+      "2": [
+        true,
+        "released"
+      ]
+    },
+    "notes": [
+      "rebuilt from the log after the crash: position {'A': 120, 'B': 19}",
+      "settle: True (settled at barrier 875: risk 0, gross 0, debit 0)"
+    ],
+    "requirement_rises_from_the_basket": 0,
+    "requirement_rises_from_everything_else": 14,
+    "recovery_checks": 1,
+    "recovery_failures": 0,
+    "late_fills_accepted": 0,
+    "duplicate_baskets_landed": 0
+  },
+  {
+    "fault": "ingress_crash",
+    "trigger": {
+      "tick": 96,
+      "equity": 121382,
+      "requirement": 122120,
+      "shortfall": 738
+    },
+    "flat": true,
+    "live_orders_at_end": 0,
+    "unwind_steps": 24,
+    "drift": -116620,
+    "execution_cost": 4536,
+    "equity_end": 226,
+    "identity_ok": true,
+    "identity_gap": 0,
+    "insurance_draw": 0,
+    "debit_bound_at_fence": 3038,
+    "unwind_over_bound": -9,
+    "refused_at_ordering_point": 0,
+    "settled": true,
+    "settle_reason": "settled at barrier 875: risk 0, gross 0, debit 0",
+    "account_view": [
+      0,
+      0,
+      0
+    ],
+    "capacity_after": 135851,
+    "cancels_recorded_only": 0,
+    "cancels_never_acknowledged": 0,
+    "per_lease_reconciliation": {
+      "1": [
+        true,
+        "released"
+      ],
+      "2": [
+        true,
+        "released"
+      ]
+    },
+    "notes": [
+      "settle: True (settled at barrier 875: risk 0, gross 0, debit 0)"
+    ],
+    "requirement_rises_from_the_basket": 0,
+    "requirement_rises_from_everything_else": 15,
+    "recovery_checks": 1,
+    "recovery_failures": 0,
+    "late_fills_accepted": 0,
+    "duplicate_baskets_landed": 0
+  },
+  {
+    "fault": "seal_undelivered",
+    "trigger": {
+      "tick": 96,
+      "equity": 121382,
+      "requirement": 122120,
+      "shortfall": 738
+    },
+    "flat": true,
+    "live_orders_at_end": 0,
+    "unwind_steps": 24,
+    "drift": -116620,
+    "execution_cost": 4536,
+    "equity_end": 226,
+    "identity_ok": true,
+    "identity_gap": 0,
+    "insurance_draw": 0,
+    "debit_bound_at_fence": 3038,
+    "unwind_over_bound": -9,
+    "refused_at_ordering_point": 0,
+    "settled": true,
+    "settle_reason": "settled at barrier 875: risk 0, gross 0, debit 0",
+    "account_view": [
+      0,
+      0,
+      0
+    ],
+    "capacity_after": 135851,
+    "cancels_recorded_only": 0,
+    "cancels_never_acknowledged": 0,
+    "per_lease_reconciliation": {
+      "1": [
+        false,
+        "no_seal"
+      ],
+      "2": [
+        true,
+        "released"
+      ]
+    },
+    "notes": [
+      "settle: True (settled at barrier 875: risk 0, gross 0, debit 0)"
+    ],
+    "requirement_rises_from_the_basket": 0,
+    "requirement_rises_from_everything_else": 15,
+    "recovery_checks": 0,
+    "recovery_failures": 0,
+    "late_fills_accepted": 0,
+    "duplicate_baskets_landed": 0
+  },
+  {
+    "fault": "basket_replayed",
+    "trigger": {
+      "tick": 96,
+      "equity": 121382,
+      "requirement": 122120,
+      "shortfall": 738
+    },
+    "flat": true,
+    "live_orders_at_end": 0,
+    "unwind_steps": 24,
+    "drift": -116620,
+    "execution_cost": 4536,
+    "equity_end": 226,
+    "identity_ok": true,
+    "identity_gap": 0,
+    "insurance_draw": 0,
+    "debit_bound_at_fence": 3038,
+    "unwind_over_bound": -9,
+    "refused_at_ordering_point": 0,
+    "settled": true,
+    "settle_reason": "settled at barrier 875: risk 0, gross 0, debit 0",
+    "account_view": [
+      0,
+      0,
+      0
+    ],
+    "capacity_after": 135851,
+    "cancels_recorded_only": 0,
+    "cancels_never_acknowledged": 0,
+    "per_lease_reconciliation": {
+      "1": [
+        true,
+        "released"
+      ],
+      "2": [
+        true,
+        "released"
+      ]
+    },
+    "notes": [
+      "settle: True (settled at barrier 875: risk 0, gross 0, debit 0)"
+    ],
+    "requirement_rises_from_the_basket": 0,
+    "requirement_rises_from_everything_else": 15,
+    "recovery_checks": 0,
+    "recovery_failures": 0,
+    "late_fills_accepted": 0,
+    "duplicate_baskets_landed": 0
+  },
+  {
+    "fault": "late_fill",
+    "trigger": {
+      "tick": 96,
+      "equity": 121382,
+      "requirement": 122120,
+      "shortfall": 738
+    },
+    "flat": true,
+    "live_orders_at_end": 0,
+    "unwind_steps": 24,
+    "drift": -116632,
+    "execution_cost": 4566,
+    "equity_end": 184,
+    "identity_ok": true,
+    "identity_gap": 0,
+    "insurance_draw": 0,
+    "debit_bound_at_fence": 3038,
+    "unwind_over_bound": 0,
+    "refused_at_ordering_point": 0,
+    "settled": true,
+    "settle_reason": "settled at barrier 875: risk 0, gross 0, debit 0",
+    "account_view": [
+      0,
+      0,
+      0
+    ],
+    "capacity_after": 135851,
+    "cancels_recorded_only": 0,
+    "cancels_never_acknowledged": 1,
+    "per_lease_reconciliation": {
+      "1": [
+        true,
+        "released"
+      ],
+      "2": [
+        true,
+        "released"
+      ]
+    },
+    "notes": [
+      "a fill under a fenced lease: True (ok)",
+      "settle: True (settled at barrier 875: risk 0, gross 0, debit 0)"
+    ],
+    "requirement_rises_from_the_basket": 0,
+    "requirement_rises_from_everything_else": 15,
+    "recovery_checks": 0,
+    "recovery_failures": 0,
+    "late_fills_accepted": 1,
+    "duplicate_baskets_landed": 0
+  }
+]

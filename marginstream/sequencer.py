@@ -47,6 +47,12 @@ class Sequencer:
         self.terms = {}             # order_id -> (symbol, qty, mark, band, cap, policy)
         self.fill_log = {}          # fill_id -> payload, for idempotent retry
         self.filled_qty = {}        # order_id -> quantity filled so far
+        # a basket is one atomic account transfer, not a set of orders. it
+        # occupies the same per-lease sequence space as an admission, so the
+        # gap-free check at a barrier covers both without a second rule.
+        self.basket_log = {}        # (lease_id, seq) -> payload
+        self.basket_by_id = {}      # basket_id -> payload
+        self.barriers = {}          # account -> watermark of the last barrier
 
     def position(self):
         return len(self.events)
@@ -134,15 +140,15 @@ class Sequencer:
         self.events.append(("cancel", order_id))
         return True, "ok"
 
-    def reconcile(self, lease_id, risk):
-        """Replay the log for one lease and return its worst-fill occupancy.
+    def _occupancy(self, admissions, risk):
+        """Worst-fill occupancy of a set of admissions, from the log.
 
         Filled quantities become positions; whatever an order has left, and has
         not been acknowledged as cancelled, is still able to fill.
         """
         filled = {}
         remaining = []
-        for order_id, _acct, symbol, qty, _holder in self.admissions_of(lease_id):
+        for order_id, _acct, symbol, qty, _holder in admissions:
             done = self.fills.get(order_id, 0)
             if done:
                 filled[symbol] = filled.get(symbol, 0) + done
@@ -169,11 +175,189 @@ class Sequencer:
                 sell[symbol] = sell.get(symbol, 0) - rest
         g = 0
         for symbol in set(filled) | set(buy) | set(sell):
-            mark = risk.symbols[symbol].mark
+            mark = risk.mark_plus(symbol)
             fq = filled.get(symbol, 0)
             g += mark * max(abs(fq + buy.get(symbol, 0)),
                             abs(fq - sell.get(symbol, 0)))
         return (r, g)
+
+    # ---- atomic baskets --------------------------------------------------
+
+    def commit_basket(self, lease_id, seq, basket_id, account, holder, legs,
+                      terms):
+        """Commit a whole basket as one event, or nothing.
+
+        Ordinary matching in this design is sharded by symbol, so a basket
+        spanning several symbols cannot fill atomically across several books.
+        The liquidation path therefore does not go through matching at all: it
+        is an internal transfer priced against the venue's own marks and
+        written here as a single log record. Either the record is there and the
+        whole basket happened, or it is not and none of it did. There is no
+        state in which half a basket exists.
+
+        `legs` is a tuple of `(symbol, qty, price, fee)`. `terms` carries the
+        `(mark, band, fee_cap)` each leg is checked against, the same way
+        `submit` carries them for an order. A retry under the same basket id
+        with the same payload succeeds again and folds once; the same id with a
+        different payload is a conflict.
+        """
+        payload = (account, tuple(legs), tuple(holder) if holder else None)
+        prior = self.basket_by_id.get(basket_id)
+        if prior is not None:
+            if prior == payload:
+                return True, "idempotent_retry"
+            self.rejected += 1
+            return False, "conflicting_basket_payload"
+        if lease_id in self.fenced:
+            self.rejected += 1
+            return False, "lease_fenced"
+        expected = self.last_seq.get(lease_id, 0) + 1
+        if seq != expected:
+            self.rejected += 1
+            return False, "sequence_gap"
+        for (symbol, qty, price, fee), (mark, band, cap) in zip(legs, terms):
+            if qty == 0:
+                return False, "zero_leg"
+            if mark is not None and abs(price - mark) > band:
+                return False, "outside_price_band"
+            if fee > cap * abs(qty):
+                return False, "fee_above_cap"
+
+        self.last_seq[lease_id] = seq
+        self.basket_log[(lease_id, seq)] = payload
+        self.basket_by_id[basket_id] = payload
+        self.events.append(("basket", lease_id, seq, basket_id, account,
+                            tuple(holder) if holder else None, tuple(legs)))
+        return True, "ok"
+
+    # ---- barrier ---------------------------------------------------------
+
+    def barrier(self, account, lease_ids):
+        """Establish that no admission authority for this account survives.
+
+        Returns `(ok, B, reason)`. `B` is the log position the settlement is
+        computed at. Three things are checked, and all three are checked here
+        rather than taken from a caller:
+
+        - every lease the account was ever given is fenced. A lease that has
+          admitted nothing is still authority and still has to be fenced.
+        - the recorded sequence under each of those leases is gap-free, so the
+          log holds every admission and every basket that lease produced.
+        - no admission or basket for this account was recorded under a lease
+          outside that set, which would be authority nobody is accounting for.
+
+        `submit` and `commit_basket` already refuse anything but the next
+        number, so the gap-free check should never fire. It is here because
+        the settlement's whole claim is that the log is complete, and an
+        assertion that never fires is cheap next to a claim that is assumed.
+        """
+        known = set(lease_ids)
+        unfenced = sorted(l for l in known if l not in self.fenced)
+        if unfenced:
+            return False, None, f"authority_still_live:{unfenced}"
+
+        for lease in sorted(known):
+            last = self.last_seq.get(lease, 0)
+            for i in range(1, last + 1):
+                if ((lease, i) not in self.log
+                        and (lease, i) not in self.basket_log):
+                    return False, None, f"sequence_gap:lease={lease},seq={i}"
+
+        for ev in self.events:
+            if ev[0] == "admit" and ev[4] == account and ev[1] not in known:
+                return False, None, f"unknown_authority:lease={ev[1]}"
+            if ev[0] == "basket" and ev[4] == account and ev[1] not in known:
+                return False, None, f"unknown_authority:lease={ev[1]}"
+
+        b = len(self.events)
+        self.events.append(("barrier", account, b))
+        self.barriers[account] = b
+        return True, b, "ok"
+
+    # ---- reconciliation --------------------------------------------------
+
+    def reconcile(self, lease_id, risk):
+        """One lease's occupancy. This is what a seal releases."""
+        return self._occupancy(self.admissions_of(lease_id), risk)
+
+    def reconcile_account(self, account, risk, barrier=None):
+        """The account's whole occupancy at a barrier, from the log alone.
+
+        Returns `(worst_fill_risk, gross_reach, debit)`.
+
+        - filled positions are admissions that filled, plus every leg of every
+          committed basket;
+        - an order counts as live unless the ordering point recorded a cancel
+          for it. A cancel that was acknowledged here and whose notification
+          was lost elsewhere is in the log and releases the order. A cancel
+          that the matching side never confirmed is not in the log and the
+          order keeps its reservation;
+        - `debit` is the execution cost still ahead of the account: the price
+          band plus the fee cap on whatever is still able to fill. Cost already
+          executed is not included, because it is already inside the equity any
+          new lease will be solved against.
+
+        No gateway has to be reachable for this. That is the point: the holders
+        whose exposure is being compacted are exactly the ones that may be gone.
+        """
+        end = len(self.events) if barrier is None else barrier
+        owner, done, cancelled = {}, {}, set()
+        filled = {}
+        for ev in self.events[:end]:
+            kind = ev[0]
+            if kind == "admit":
+                _k, _lease, _seq, oid, acct, sym, qty, _holder = ev
+                if acct == account:
+                    owner[oid] = (sym, qty)
+            elif kind == "fill":
+                oid, qty = ev[1], ev[2]
+                if oid in owner:
+                    done[oid] = done.get(oid, 0) + qty
+            elif kind == "cancel":
+                if ev[1] in owner:
+                    cancelled.add(ev[1])
+            elif kind == "basket":
+                _k, _lease, _seq, _bid, acct, _holder, legs = ev
+                if acct == account:
+                    for sym, qty, _price, _fee in legs:
+                        filled[sym] = filled.get(sym, 0) + qty
+
+        remaining = []
+        for oid, (sym, qty) in owner.items():
+            d = done.get(oid, 0)
+            if d:
+                filled[sym] = filled.get(sym, 0) + d
+            rest = qty - d
+            if rest and oid not in cancelled:
+                remaining.append((sym, rest))
+
+        worst = None
+        for f in risk.grid:
+            v = risk.loss_num(filled, f)
+            for sym, rest in remaining:
+                leg = risk.leg_num(sym, rest, f)
+                if leg > 0:
+                    v += leg
+            if worst is None or v > worst:
+                worst = v
+        r = 0 if worst is None or worst <= 0 else risk.ceil_div(worst, risk.DEN)
+
+        buy, sell = {}, {}
+        for sym, rest in remaining:
+            if rest > 0:
+                buy[sym] = buy.get(sym, 0) + rest
+            else:
+                sell[sym] = sell.get(sym, 0) - rest
+        g = 0
+        for sym in set(filled) | set(buy) | set(sell):
+            mark = risk.mark_plus(sym)
+            fq = filled.get(sym, 0)
+            g += mark * max(abs(fq + buy.get(sym, 0)),
+                            abs(fq - sell.get(sym, 0)))
+
+        debit = sum(abs(rest) * risk.debit_per_lot(sym)
+                    for sym, rest in remaining)
+        return (r, g, debit)
 
     def rebuild_account(self, risk, collateral, mode="exact"):
         """Fold the log into an account. This is the reference a recovered
@@ -191,6 +375,10 @@ class Sequencer:
                     continue
                 n += 1
                 acct.apply_fill(("log", n), symbol_of.get(oid), qty, price, fee)
+            elif ev[0] == "basket":
+                bid, legs = ev[3], ev[6]
+                for i, (sym, qty, price, fee) in enumerate(legs):
+                    acct.apply_fill(("basket", bid, i), sym, qty, price, fee)
         return acct
 
     def admissions_of(self, lease_id):
