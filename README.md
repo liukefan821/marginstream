@@ -1,77 +1,107 @@
 # MarginStream
 
-A simulator for cross-margin admission control on a symbol-sharded venue.
+A deterministic simulator for cross-margin admission control on a symbol-sharded
+derivatives venue. It is the evidence base for the whitepaper in `paper/`.
 
-The margin requirement for an account is `M(P) = R(P) + A(P)`, where `R` is the
-worst loss over a fixed scenario set and `A` is a convex add-on in gross
-notional. `R` is sub-additive across shards and `A` is super-additive, so a
-budget can be split into per-shard leases only for the `R` part; the `A` part is
-reserved centrally. Shards admit orders against their lease with a local
-computation and no cross-shard read.
+**The problem.** A unified cross-margin account has one margin requirement that
+is global over the account and non-additive over contracts, and it must be
+enforced *before* an order reaches a book — while the books themselves are
+sharded by symbol and written concurrently.
 
-A lease can be a single amount, or a non-increasing function of the published
-market state. The second form is evaluated by the shard against the state it
-already receives on the market-data path, so the amount available falls as the
-market moves adversely with no message from the allocator. A lease cannot undo
-an admission it has already granted; what the curve provides is a locally
-computable point at which a shard stops admitting risk-increasing orders and
-reports the condition.
+**The mechanism.** The requirement splits as `M_k(P) = R(P) + A(G_k(P))`: a
+worst-case loss over a finite scenario set, plus a convex add-on in gross
+notional. `R` and gross are sub-additive across a partition and `A` is
+super-additive, so the first two divide into per-gateway ceilings checked locally
+and the add-on is evaluated once, centrally, on the summed gross. Each ingress
+gateway holds **three** ceilings — scenario requirement, reachable gross, and
+execution cost — and compares **absolute** worst-fill figures against them, never
+the increment an order adds. The allocator issues them under
 
-Reading the state on the market-data path puts a requirement on that path which
-it did not previously carry. A shard may be configured to evaluate its curve at
-the most adverse state it has observed since the lease was installed rather than
-at the state on the current message, which removes any gain from replaying an
-older and more favourable state.
+    2 * sum_g λ_g^R  +  A( sum_g λ_g^G )  +  sum_g λ_g^D   <=   E_0
 
-## Layout
+where the factor of two is a closure, not a margin. There is no market state in
+the condition. §2 of the paper has the derivation; ADR-2 records the
+price-conditional schedule that an earlier version of this design used and that
+is now withdrawn.
 
-    marginstream/risk.py         scenario term R, add-on term A, marginal cost
-    marginstream/allocator.py    budget solve by bisection, lease issuance, generations
-    marginstream/shard.py        local admission, fencing
-    marginstream/invariants.py   independent recomputation of the checked quantities
-    marginstream/sim.py          seeded harness: epochs, lease delivery loss, liquidation
-    experiments/e1_safety.py     seeded sweep with fencing enabled
-    experiments/e2_negative.py   scripted case and sweep with fencing disabled
-    experiments/e4_conditional.py scalar lease against price-conditional lease
-    experiments/e5_adversarial.py  market-state suppression against the curve
-    tests/test_algebra.py        sampled checks of the two algebraic properties
+**Authority.** Every lease is registered at a single ordering point against an
+account, a holder and an authority kind; the holder comes from the authenticated
+session, never from the request. A term ends a holder's authority to admit and
+never ends the exposure it created. Only a fence at the ordering point stops a
+holder that is unreachable or dishonest.
 
-## Running
+## What is canonical, and what is not
 
-    python3 tests/test_algebra.py
-    python3 experiments/e1_safety.py
-    python3 experiments/e2_negative.py
-    python3 experiments/e4_conditional.py
-    python3 experiments/e5_adversarial.py
+| Path | Status |
+|---|---|
+| `marginstream/risk.py`, `account.py`, `sequencer.py`, `allocator2.py`, `gateway2.py`, `execution.py`, `liquidation.py` | **Canonical.** This is the mechanism the paper describes |
+| `marginstream/allocator.py`, `gateway.py`, `shard.py`, `sim.py`, `invariants.py` | **Legacy.** Earlier interfaces, kept only because `experiments/superseded/` imports them. Nothing current imports them |
+| `experiments/superseded/`, `results/superseded/` | **Superseded.** Produced by withdrawn mechanisms. The scripts there cannot run from that path and will raise `ImportError`; that is deliberate |
 
-No dependencies beyond the standard library. Python 3.12.3 was used.
+The `2` suffix is history and not a version number. Renaming would touch frozen
+code, so the naming is documented rather than fixed.
+
+## Running it
+
+Eleven test files and seven experiments. **Run exactly these**; do not use a
+glob, because a glob picks up anything left on disk by an earlier extraction.
+
+    python3 --version    # 3.12.3 produced results/; see results/PROVENANCE.md
+
+    for t in tests/test_account.py tests/test_algebra.py \
+             tests/test_authority.py tests/test_counterexamples.py \
+             tests/test_execution_debit.py tests/test_lifecycle_fuzz.py \
+             tests/test_liquidation.py tests/test_recovery.py \
+             tests/test_repricing.py tests/test_worst_fill.py \
+             tests/test_worst_fill_exhaustive.py; do
+      echo "### $t"; python3 "$t"; echo "exit=$?"
+    done
+
+    for e in experiments/e1_equity_safety.py \
+             experiments/e2_naive_netting_negative.py \
+             experiments/e3_hot_path_benchmark.py \
+             experiments/e4_recovery.py \
+             experiments/e5_flawed_equity_negative.py \
+             experiments/e6_liquidation_delay.py \
+             experiments/e7_operational_faults.py; do
+      echo "### $e"; python3 "$e"; echo "exit=$?"
+    done
+
+Every file exits 0. Running the experiments rewrites `results/`; six of the seven
+files are byte-identical on any machine because the simulator is integer-only and
+seeded, and `results/e3_hot_path.json` is wall-clock timing and will differ.
+Restore it with `git checkout -- results/` if you did not intend to re-record.
+
+No dependencies beyond the standard library.
+
+## What each piece is evidence for
+
+| | |
+|---|---|
+| `test_algebra` | the two algebraic properties the decomposition rests on |
+| `test_counterexamples` | 16 lifecycle counterexamples, c1–c16 |
+| `test_worst_fill`, `test_worst_fill_exhaustive` | envelopes over order state; closed form against enumeration of all 2ⁿ fill subsets |
+| `test_repricing` | where gross is measured, and the scope of the tightness claim |
+| `test_authority` | the ordering point's lease binding, including the cross-account attack an external review demonstrated |
+| `test_execution_debit` | price band, fee cap, fill identity and the cross-generation debit baseline |
+| `test_account`, `test_recovery`, `test_liquidation`, `test_lifecycle_fuzz` | ledger identity, crash recovery, the liquidation and settlement path, and a fuzz over 10,060 admissions |
+| E1 | worst-fill requirement against equity at every scenario, with a **binding** trial |
+| E2, E5 | negative controls: netting live orders; ceilings solved against a misreported equity |
+| E3 | incremental admission against a full scan computing identical envelopes |
+| E4 | 3,642 injected crashes; snapshot plus replay against a rebuild from the whole log |
+| E6, E7 | liquidation delay decomposed exactly, and eleven faults injected into that path |
 
 ## Determinism
 
-All arithmetic is integer. Divisions that produce a requirement round up. The
-harness reads no wall-clock time and draws only from a seeded `random.Random`.
-A given `(seed, Config)` reproduces the same counters.
+All arithmetic is integer; divisions producing a requirement round up. Nothing
+reads wall-clock time except E3, and randomness comes only from a seeded
+`random.Random`. A given `(seed, config)` reproduces the same counters.
 
-## What is not in here yet
+## Documents
 
-- E3, the capital-efficiency sweep over correlation structure.
-- A mark-price pipeline. E5 shows that evaluating the curve at the worst
-  observed state removes the gain from replaying an older state but does not
-  address a feed that reports a rise late; that belongs to the pipeline.
-- Adversarial lease capture: an account spraying orders across shards to take
-  lease before other flow can.
-- A liquidation waterfall. Reduction is a proportional scale-down; there is no
-  partial liquidation, insurance fund or auto-deleveraging.
-- The ledger module (hold and lease are separate concepts; only the lease side
-  is implemented).
-- Matching. Shards hold positions; they do not match orders against a book.
-
-## Running everything
-
-    python3 --version                                  # 3.12.3 used for the recorded output
-    for t in tests/test_*.py; do python3 "$t"; done
-    for e in experiments/e*.py; do python3 "$e"; done
-
-Every file exits 0 on success. `REPRODUCE.md` carries the recorded output of
-each round, the failure modes found while building it, and the claims that were
-withdrawn.
+    paper/01..09          the whitepaper body
+    paper/A_..C_          appendices: decision history, target deployment, protocols
+    paper/diagrams.md     Figures 1-4; Figure 5 is in Appendix B
+    REPRODUCE.md          recorded output per round, and the claims withdrawn
+    results/PROVENANCE.md machine, OS, Python, date and commit for the current results
+    DELIVERY.md           what changed since the previous package, including deletions

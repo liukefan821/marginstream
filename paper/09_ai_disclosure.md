@@ -3,23 +3,21 @@
 ## 9.1 How AI was used
 
 An AI assistant was used throughout as a co-author: proposing mechanism, writing
-the simulator, deriving the Fermi estimates, and drafting these sections. Every
-experiment was executed rather than described, and the outputs quoted in
-`REPRODUCE.md` are the outputs those runs produced — Python 3.12.3 on Linux in
-the assistant's environment and 3.13.5 on macOS locally, identical except for
-E3's wall-clock figures, because the simulator is integer-only and seeded.
+the simulator, deriving the Fermi estimates, drafting these sections. Every
+experiment was executed rather than described, and because the simulator is
+integer-only and seeded, runs on Python 3.12.3/Linux and 3.13.5/macOS agree
+except for E3's wall-clock figures (`results/PROVENANCE.md`).
 
-The material below is what the rubric asks for: what was rejected, and why.
+Below is what the rubric asks for: what was rejected, and why.
 
 ## 9.2 Prompts that mattered
 
 **"Verify before building on it."** Applied to citations and to the assistant's
-own characterisation of the design's risks. It surfaced that the risk the
-assistant named first was not the real one (9.3, item 1).
+own account of the design's risks; it surfaced that the risk named first was not
+the real one (9.3, item 1).
 
 **"Comments say what the code does, not what it is supposed to prove."** Applied
-to the simulator and every experiment script, which describe the configuration
-they run and print the counters they recorded.
+to the simulator and every experiment script.
 
 **"Does the constraint actually bind?"** Asked of the first E1 run, which
 reported zero violations because the budget was far above what the flow consumed.
@@ -28,8 +26,9 @@ where the risk and debit envelopes reach 99% and the requirement is 49% of
 equity; only that zero is meaningful.
 
 **"Attack your own interface."** External hostile review was run each round
-against the code rather than the prose. It produced the authority-binding
-failure (9.3, item 6), among others.
+against the code rather than the prose. It produced the authority-binding failure
+(9.3, item 6) and, late on, the discovery that a superseded experiment left on
+disk was passing on an empty sample.
 
 ## 9.3 Suggestions and claims rejected, and why
 
@@ -59,11 +58,10 @@ failure (9.3, item 6), among others.
 
 ## 9.4 What the numbers are, and are not
 
-- **Current evidence:** E1–E7, and eleven test files — 16 lifecycle
+- **Current evidence:** E1–E7 and eleven test files — 16 lifecycle
   counterexamples, 6 worst-fill cases plus an exhaustive closed-form comparison
-  over 4,000 books, 6 recovery cases, 14 liquidation cases, 6 repricing cases, 6
-  authority cases, 7 execution-cost cases, 14 ledger cases, and a lifecycle fuzz
-  over 10,060 admissions.
+  over 4,000 books, 6 recovery, 14 liquidation, 6 repricing, 6 authority, 7
+  execution-cost and 14 ledger cases, and a fuzz over 10,060 admissions.
 - E3's absolute latencies support a **scaling** claim, not NFR row 2's target.
 - E6's required-buffer figures are one configuration, one seed, one price path.
 - The ledger of §4 is designed and not implemented; §4.3 establishes three facts
@@ -76,8 +74,9 @@ failure (9.3, item 6), among others.
 
 ## 9.5 Section ownership
 
-**TODO — names to be filled in before submission.** Every member presents their
-own sections at the defence and the panel may ask any member any question.
+**TODO — to be filled in before submission; these must not reach the PDF.** Every
+member presents their own sections and the panel may ask any member any question,
+so the split has to be one the group has rehearsed, not one assigned on paper.
 
 | § | Section | Owner |
 |---|---|---|

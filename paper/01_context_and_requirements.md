@@ -3,16 +3,15 @@
 ## 1.1 The venue
 
 MarginStream is a derivatives venue offering linear perpetual and dated futures
-on 40 underlyings, 120 contracts, to APAC retail and institutional clients.
-Positions across all 120 contracts are margined against a single account balance
-rather than contract by contract. Leverage is capped at 20×; parameters below
-assume a median active account at 8×.
+on 40 underlyings, 120 contracts, to APAC retail and institutional clients. All
+120 are margined against a single account balance rather than contract by
+contract. Leverage is capped at 20×; parameters below assume a median active
+account at 8×.
 
-The commercial reason to offer a unified account is capital efficiency: a client
-long one contract and short a correlated one should not have to fund both legs
-separately. That is the product. Any design that quietly removes the offset has
-removed the reason the venue exists, so the cost of every conservative step taken
-below is stated as a number rather than absorbed silently.
+The commercial reason for a unified account is capital efficiency: a client long
+one contract and short a correlated one should not fund both legs separately.
+Any design that quietly removes the offset removes the reason the venue exists,
+so the cost of every conservative step below is stated as a number.
 
 Scale: 10⁶ registered accounts, 10⁵ with open positions, 10⁴ whose positions or
 marks change between two issuances. A median account holds 5 contracts; the tail
@@ -20,16 +19,15 @@ holds 50.
 
 ## 1.2 The requirement that does not decompose
 
-The running case can place pre-trade risk before the sequencer because the check
-is per-account and per-asset: freezing funds for one order says nothing about any
-other book, so the check runs per connection and scales horizontally
-(OrderStream, Part 5 §1). Matching is then sharded by symbol with a single writer
-per shard and no order crossing a shard (Part 2 §3).
+The running case places pre-trade risk before the sequencer because the check is
+per-account and per-asset: freezing funds for one order says nothing about any
+other book, so it runs per connection and scales horizontally (Part 5 §1).
+Matching is sharded by symbol, single writer per shard (Part 2 §3).
 
-A unified cross-margin account removes the first property while leaving the
-second in place. A fill on one contract changes the margin requirement of
-positions in other contracts held by the same account, and those positions sit on
-other shards being written concurrently. The invariant
+A unified cross-margin account removes the first property and leaves the second.
+A fill on one contract changes the requirement of positions in other contracts
+held by the same account, sitting on shards being written concurrently. The
+invariant
 
 > the account's margin requirement must not exceed its equity
 
@@ -40,10 +38,10 @@ Locking the account, giving each holder a fixed sub-limit with no offset, and
 admitting optimistically are the three obvious resolutions; ADR-1 records why
 each fails.
 
-The design in §2 keeps matching exactly as the running case has it and moves the
-difficulty into a second authority: a margin allocator that runs off the order
-path and hands **each ingress gateway** a locally checkable share of the
-account's capacity. Matching shards hold no lease and make no margin decision.
+§2 keeps matching exactly as the running case has it and moves the difficulty
+into a second authority: a margin allocator that runs off the order path and
+hands **each ingress gateway** a locally checkable share of the account's
+capacity. Matching shards hold no lease and make no margin decision.
 
 ## 1.3 Scope
 
@@ -51,10 +49,8 @@ In scope: the margin authority, the admission path, the degradation ladder, the
 liquidation and settlement path, and the audit trail for admission decisions.
 
 Taken as given from the running case and cited rather than re-derived: the
-matching engine, the replicated log, determinism as a design invariant, and
-double-entry accounting. Out of scope: order routing, market making, fiat rails
-and wallet infrastructure. We do not build a matching engine or attempt to
-distinguish informed from uninformed flow.
+matching engine, the replicated log, determinism, and double-entry accounting.
+Out of scope: order routing, market making, fiat rails, wallet infrastructure.
 
 ## 1.4 Non-functional requirements
 
@@ -69,16 +65,19 @@ distinguish informed from uninformed flow.
 | 7 | Allocator throughput | ≈ 3 × 10⁷ scenario operations per issuance | Sharded by account; grid evaluated as a vector |
 | 8 | Availability | 99.99% for order entry; failover < 3 s | Replicated log, as in the running case |
 | 9 | Degradation | The venue can bound its own loss in every state above HALT. Client-initiated risk reduction is **not** preserved under partition | Venue-initiated liquidation (§5.4); §3.3 states what is given up |
-| 10 | Auditability | Every admission decision replayable from the log with the ceilings and figures it compared | Ordering point's log plus the gateway's journal (§2.6) |
-| 11 | Solvency | Σ user liabilities ≤ Σ venue assets, checkable continuously | §4.3 |
+| 10 | Auditability | **Target:** every admission *and refusal* replayable with the figures it compared. **Today:** admissions only. A refusal never reaches the ordering point, and §2.6's gateway refusal journal is not built |
+| 11 | Solvency | **Target:** Σ user liabilities ≤ Σ venue assets, continuously checkable. **Today:** three facts about one account (§4.3). The ledger is unimplemented and the fund unsized, so the venue-level claim is an argument |
 
-Rows 1, 3 and 8 are inherited. Rows 2, 6 and 7 are derived in §1.5–1.7. The rest
-are established in §2, §3 and §5.
+Rows 1, 3 and 8 are inherited; 2, 6 and 7 derived in §1.5–1.7; 4, 5 and 9
+established in §2, §3 and §5. Rows 10 and 11 are targets, marked as such; §9.4
+lists everything designed and not built.
 
 ## 1.5 What sets the lease term
 
 A lease is a fixed ceiling a gateway may spend for the length of its term. The
-term is the only free number in the mechanism, and it is bounded from both sides.
+term is the mechanism's principal operational trade-off parameter — the scenario
+grid, the add-on parameters, the price bands, the fee caps and the gateway
+weights are all chosen too — and it is the one bounded from both sides at once.
 
 **Recompute cost is the floor.** §1.6 works out ≈ 3 × 10⁷ operations per issuance
 for the whole book, which is an ordinary workload at a 100 ms cadence and is not
@@ -92,11 +91,10 @@ changes that — which is what the term is for.
 > decision **under partition**.
 
 Raising a limit takes effect at the next issuance, and so does lowering one when
-the allocator can reach the gateways. The term bounds only the unreachable case,
-and there it bounds everything: a collateral cut, a downgrade, a withdrawal.
-50–200 ms is a **design target chosen against an assumed tightening SLO**, not a
-figure derived from any supervisory deadline; a venue with a specific obligation
-must set the term below it.
+the allocator can reach the gateways; the term bounds only the unreachable case,
+where it bounds everything — collateral cut, downgrade, withdrawal. 50–200 ms is
+a **design target chosen against an assumed tightening SLO**, not a figure derived
+from any supervisory deadline.
 
 One path does not wait: fencing the lease at the ordering point (§2.5), which is
 immediate and needs no gateway to be reachable. The term bounds *routine*
@@ -107,43 +105,41 @@ market state. It is withdrawn: see ADR-2 and Appendix A.
 
 ## 1.6 What the allocator has to compute, and how often
 
-Per account, per issuance:
+Per account per issuance: one evaluation of the scenario term at |S| × contracts
+≈ 16 × 5 ≈ 80 multiply-adds, one feasibility check of §2.4's condition at the same
+order, and a bisection for the scale over 10⁹ minor units at ≈ 30 iterations —
+≈ 3 × 10³ operations in all. At 10⁴ accounts changed per issuance that is
+**≈ 3 × 10⁷ per issuance** and, at a 100 ms cadence, **≈ 3 × 10⁸ per second**.
+Sixteen allocator shards (§2.6) carry ≈ 2 × 10⁷ each: headroom, not a fit.
 
-- one evaluation of the scenario term: |S| × contracts held ≈ 16 × 5 ≈ 80
-  multiply-adds for a median account;
-- one feasibility check of the condition of §2.4: the same order, ≈ 10²;
-- solving for the scale by bisection to integer precision over 10⁹ minor units,
-  ≈ 30 iterations: ≈ 3 × 10³ operations.
-
-At 10⁴ accounts changed per issuance that is **≈ 3 × 10⁷ operations per
-issuance**, and at a 100 ms cadence **≈ 3 × 10⁸ per second**. Sixteen allocator
-shards (§2.6) carry ≈ 2 × 10⁷ each, which is headroom rather than a fit.
-
-The allocator has no invariant spanning two accounts, which is what makes the
-sharding trivial. Recompute is incremental: an account whose positions and marks
-have not changed keeps its ceilings.
+No invariant spans two accounts, which is what makes the sharding trivial, and
+recompute is incremental: unchanged positions and marks keep their ceilings.
 
 ## 1.7 What the admission path may do per order
 
 The admission decision must not recompute the requirement from positions. Each
 gateway keeps, per account, the running loss numerator under each of the |S|
 scenarios plus the worst-fill gross and debit totals, updated on each order state
-change. Admitting an order is one pass over the grid, one symbol's gross update,
-and three integer comparisons — no dependence on how many orders are live.
+change. Admitting is one pass over the grid, one symbol's gross update and three
+integer comparisons — independent of how many orders are live.
 
-Memory is |S| × 8 bytes plus a small per-symbol tally, ≈ 128 B per
-(account, gateway) pair; at 10⁵ active accounts touching 5 gateways each,
-≈ 5 × 10⁵ pairs and ≈ 64 MB resident.
+Memory is ≈ 128 B per (account, gateway) pair; at 10⁵ active accounts touching 5
+gateways each, ≈ 5 × 10⁵ pairs and ≈ 64 MB resident.
 
 **Measured, not argued.** E3 times the incremental path against a full scan
-computing identical envelopes, after checking they agree on 400 random books.
-Incremental admission is flat in the order count — 7,434 ns at 50 live orders and
-7,672 at 500 on a 7-scenario grid — while the full scan grows 7.5× over the same
-range and the incremental path grows 1.4× when the grid widens 2.3×. That is
-O(|S|) against O(orders × |S|), shown by the scaling.
+computing identical envelopes, after checking the two agree on 400 random books.
+From the recorded run in `results/e3_hot_path.json`: increasing live orders 10×,
+from 50 to 500, changed the incremental median by 1.1%, while the full scan over
+the same range grew 6.7×; widening the grid from 7 scenarios to 16 raised the
+incremental median by 34%. That is O(|S|) against O(orders × |S|).
 
-The absolute figures are CPython on a shared machine. **They support the scaling
-claim and not row 2's latency target**, which remains argued.
+**The absolute figures are deliberately not quoted here.** They are wall-clock
+nanoseconds from CPython on a shared machine, they differ by a third between the
+hosts this has run on, and they are three orders of magnitude from what a
+compiled implementation would need. Only the ratios above are evidence, and they
+support the scaling claim rather than row 2's latency target, which remains
+argued. `results/PROVENANCE.md` records the machine, and `REPRODUCE.md` lists
+other hosts under the host that produced them.
 
 ## 1.8 What these numbers commit us to
 

@@ -4,14 +4,14 @@
 
 | Boundary | If the far side is fully compromised |
 |---|---|
-| Client ↔ ingress gateway | The account's own ceilings for the current term. Ceilings are per account, so one compromised client cannot consume another's |
-| Ingress gateway ↔ ordering point | **The gateway is inside the trusted computing base.** See below |
-| Ordering point ↔ everything | Total. Every safety claim in this document rests on it |
-| Liquidator ↔ ordering point | The account it is liquidating, in full. Nothing in the capacity accounting bounds it |
-| Market data ↔ allocator | How much capacity is solved for, for every account. Not the admission check itself |
-| Allocator ↔ gateway | An account's whole capacity. The allocator is the authority for margin |
+| Client ↔ gateway | The account's own ceilings. Ceilings are per account, so one client cannot consume another's |
+| Gateway ↔ ordering point | **Inside the trusted computing base.** See below |
+| Ordering point ↔ everything | Total. Every safety claim rests on it |
+| Liquidator ↔ ordering point | The account it is liquidating, in full |
+| Market data ↔ allocator | How much capacity is solved for. Not the admission check itself |
+| Allocator ↔ gateway | An account's whole capacity |
 | Chain ↔ custody | Venue assets. Unchanged from the running case |
-| Operator ↔ ledger | Nothing; there is no write path. Detection is reconciliation, not prevention |
+| Operator ↔ ledger | Nothing; no write path. Detection is reconciliation, not prevention |
 
 **The gateway is inside the trusted computing base.** An earlier version of this
 document claimed its blast radius is bounded by the leases it holds. That is
@@ -33,40 +33,46 @@ What a compromised gateway cannot do — each pinned by a test:
 - hide an admission, because the ordering point takes only the next sequence
   number for its lease.
 
-What it can do: admit orders its ceilings do not cover, for the accounts it
-serves, until its term ends or it is fenced. The bound on that damage is the term
-length and the fence latency, not the ceiling. Closing it would mean re-deriving
+What it can do, stated without softening: **a compromised gateway is bounded by
+neither its ceilings nor its own term.** It can submit arbitrary quantity for
+every account whose lease it holds, and it will not stop at its expiry, because
+the ordering point does not enforce terms — it has no clock it can compare
+against an expiry set elsewhere (ADR-6). A term bounds an *honest* gateway that
+has lost contact. The only thing that stops a dishonest one is a fence
+committing at the ordering point.
+
+So the mechanism bounds the **scope** of the damage — which accounts, which
+authority kind, which holder — and does not bound its **magnitude**. The exposure
+window is detection latency plus fence-commit latency, and nothing in this
+document measures either. Closing this would mean re-deriving
 the envelopes at the ordering point, which puts the per-order margin computation
 back on the single-writer path — the thing §2.2 exists to avoid. That trade is
 not made here; it is the residual.
 
 **The liquidator is inside it too, on its own account.** Its orders are checked
 against the merged account rather than a ceiling (c9), so no ceiling bounds it.
-The non-increase test bounds the *risk* it can create — neither merged envelope
-may rise — but permits unlimited churn, and churn costs execution. Its authority
-ends like any other holder's, at the ordering point, and the barrier refuses to
-run while it is live (t5, l11). That is containment of duration, not of
-authority.
+The non-increase test bounds the *risk* it creates — neither merged envelope may
+rise — but permits unlimited churn, and churn costs execution. Its authority ends
+at the ordering point like any other's, and the barrier refuses to run while it
+is live (t5, l11): containment of duration, not of authority.
 
-**The market-data path.** In the running case it carries no authority. Here the
-marks set equity, the scenario displacements and `mark_plus`, so a wrong value
-changes how much capacity is solved for. That is weaker than an earlier draft
-claimed — the admission check contains no market state — but it is the exposure
-in §6.3 A1.
+**The market-data path** carries no authority in the running case. Here marks set
+equity, the scenario displacements and `G+`, so a wrong value changes how much
+capacity is solved for — weaker than an earlier draft claimed, since the
+admission check reads no market state, but it is the exposure in §6.3 A1.
 
 ## 6.2 Who can move money
 
 Three ways, none of them the margin path: a trade, journalled by clearing; a
 deposit or withdrawal, frozen then reviewed then gated then signed once per
 withdrawal ID; and a liquidation or insurance-fund draw, journalled like any
-other posting. No component writes a balance directly.
+other posting. No component writes a balance.
 
 A withdrawal reduces equity, so outstanding capacity against the old figure must
 stop before funds leave. Two orderings work and differ in latency, not safety:
-**fence, reconcile, re-issue against the reduced equity, release** — immediate,
-at the cost of a fence round trip; or **wait for the outstanding terms to end,
-then re-issue and release** — free, binds within the term. Releasing first is not
-available: it leaves gateways spending against equity that has left the venue.
+fence, reconcile, re-issue, release — immediate, at the cost of a fence round
+trip; or wait for the terms to end, then re-issue and release — free, binds
+within the term. Releasing first is not available.
 
 ## 6.3 Business-logic abuse cases
 
@@ -78,16 +84,17 @@ account reporting more equity than it has buys a ceiling it cannot carry.
 E5 measures it. An account that forgets a realised loss reports 92,000 where it
 has 42,000, is issued 46,000 instead of 21,000, admits 230 orders instead of 105,
 and ends 4,000 above equity. At the binding point the breach tracks the
-overstatement one for one: overstating by 10,000 produces a breach of 10,000.
+overstatement approximately one for one, subject to lot rounding: overstating by
+10,000 produces a breach of 10,000, while 1,000 produces 800, because the ceiling
+cannot move until the overstatement buys a whole lot of requirement.
 **The factor of two is a closure, not a margin against a misreported account**;
 an earlier draft that read it as a 64% tolerance was reading unused workload
 slack.
 
 The exposure is to anything that moves `E_0`: a suppressed mark, a lost fee, a
-realised loss the ledger has not folded in. The defences are the exact cash-flow
-identity of §4.3, the account being a fold of the log so it can be rebuilt
-independently, and multi-sourced marks. None is a proof; a compromised equity
-path is a compromised mechanism.
+realised loss not yet folded in. The defences are §4.3's cash-flow identity, the
+account being an independently rebuildable fold of the log, and multi-sourced
+marks. None is a proof; a compromised equity path is a compromised mechanism.
 
 ### A2 — A compromised gateway
 
@@ -97,48 +104,54 @@ Covered in §6.1; it is a trust-boundary question, not a business-logic one.
 
 A gateway prices nothing globally: it compares absolute figures against its own
 ceilings and gets no credit for offsets held elsewhere, so the account is charged
-the sub-additivity gap of §2.3. Concentrating one account's *correlated* orders
-onto fewer gateways shrinks that gap and buys real capacity — not by
-concentrating market risk, but by making the decomposition less conservative.
+the sub-additivity gap of §2.3. Concentrating onto fewer gateways the positions
+that *offset each other*, or whose losses peak in *different* scenarios, shrinks
+that gap and buys real capacity — not by concentrating market risk, but by making
+the decomposition less conservative.
 
-This is a **capacity-fairness** problem rather than a solvency one: the account's
-requirement is still bounded, but a client who can influence routing gets more
-usable capacity than one who cannot. It matters exactly when the client can pick
-a gateway, or can shift its flow by retrying until it lands where it wants.
+This is a **capacity-fairness** problem, not a solvency one: the requirement is
+still bounded, but a client who can influence routing — by picking a gateway, or
+retrying until it lands where it wants — gets more usable capacity than one who
+cannot.
 
-Mitigations, none implemented: account affinity, so an account's flow lands on
-the same gateway set unless the venue moves it; controlled failover rather than
-client-driven retry; and usage-aware weights, so the allocator gives more of the
-ceiling to the gateway an account actually uses. The withdrawn reduce-only
-channel is not among them.
+Mitigations, none implemented: account affinity and controlled failover keep
+offsetting legs together and so shrink the gap; usage-aware weights do not shrink
+it at all, they only reduce stranded capacity on gateways an account is not
+using.
 
 ### Two lesser cases, recorded and not developed
 
-Fee-cap gaming through many small fills, bounded by the per-lot cap the ordering
-point enforces (d4); and deliberately stalling a liquidation by leaving orders
-the matching side never acknowledges cancels for, which the settlement keeps
-reserved rather than releases (l13).
+Fee-cap gaming through many small fills, bounded by the per-lot cap (d4); and
+stalling a liquidation by leaving orders whose cancels are never acknowledged,
+which the settlement keeps reserved rather than releases (l13).
 
 ## 6.4 Regulatory posture
 
-What this design offers a supervisor is **reproducibility**: every admission and
-every refusal is a function of the log, and the values it was derived from are
-versioned on that log (§4.1). A decision from three months ago can be recomputed
-rather than described.
+What this design offers a supervisor is **reproducibility of what was admitted**:
+every admitted order is on the ordering point's log with the lease, the holder
+and the terms it was held to, and the values the decision was derived from are
+versioned on that log (§4.1), so an admission from three months ago can be
+recomputed rather than described.
+
+It does not yet offer the same for a **refusal**. A gateway that refuses an order
+on its own envelope arithmetic sends nothing to the ordering point, so there is
+no record to replay. NFR row 10 is written as a target for that reason, and the
+gateway refusal journal that would close it is designed and not built.
 
 What it does not offer is a guarantee that clients can always exit. The venue can
-act on an account it can no longer margin (§5.4); a client whose gateway's term
-has ended cannot close through it, and there is no client-facing close-only path
-(§3.3). A supervisor asking whether clients can always exit should be told no.
-That is the narrower and defensible claim, and §7 records that building the wider
-one was considered and not done.
+act on an account it can no longer margin (§5.4), but a client whose gateway's
+term has ended cannot close through it and there is no client-facing close-only
+path (§3.3). A supervisor asking whether clients can always exit should be told
+no; §7 records that the wider claim was considered and not built.
 
 ## 6.5 Detection
 
-The signals specific to this threat model, all of which §8.2 pages on:
-divergence between the equity the allocator solved against and the equity a
-rebuild from the log implies; ceilings summing above what the condition solved
-for; a gateway's own figures above the ceilings it holds; a lease fenced but not
-settled beyond a bound; mark divergence across sources; and a non-zero rate of
-authority-binding refusals, which in normal operation should be zero and
-otherwise means a component is submitting under a lease that is not its own.
+Six signals, all paged on and listed in §8.2: equity divergence between what the
+allocator solved against and what a rebuild from the log implies; ceilings
+summing above the solve; a gateway's figures above its ceilings; a lease fenced
+but not settled beyond a bound; mark divergence across sources; and any
+authority-binding refusal, which should be zero and otherwise means a component
+is submitting under a lease that is not its own.
+
+The gap this list cannot close is §6.1's: nothing here detects a gateway that
+lies about arithmetic nobody re-derives, until the account's own figures move.

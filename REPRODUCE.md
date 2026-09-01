@@ -1,3 +1,46 @@
+# Reproducing MarginStream
+
+## Current commands and current results
+
+Run the enumerated commands in `README.md`. Do not use a glob: it picks up
+anything a previous extraction left on disk.
+
+| Experiment | Script | Result file |
+|---|---|---|
+| E1 | `experiments/e1_equity_safety.py` | `results/e1_equity.json` |
+| E2 | `experiments/e2_naive_netting_negative.py` | `results/e2_naive_netting.json` |
+| E3 | `experiments/e3_hot_path_benchmark.py` | `results/e3_hot_path.json` |
+| E4 | `experiments/e4_recovery.py` | `results/e4_recovery.json` |
+| E5 | `experiments/e5_flawed_equity_negative.py` | `results/e5_flawed_equity.json` |
+| E6 | `experiments/e6_liquidation_delay.py` | `results/e6_liquidation_delay.json` |
+| E7 | `experiments/e7_operational_faults.py` | `results/e7_operational_faults.json` |
+
+Eleven test files, all in `tests/`, all exiting 0. `results/PROVENANCE.md` gives
+the machine, OS, Python version, date and commit for the current result files;
+`results/superseded/README.md` gives the commit for each older one.
+
+### E3 across machines
+
+E3 is the only wall-clock measurement here and its absolute figures are not
+comparable across hosts. Three runs exist:
+
+| Host | incremental p50, 7 scenarios, 50 → 500 orders | full scan growth over the same range |
+|---|---|---|
+| Linux x86_64, CPython 3.12.3 (recorded, `results/`) | 9,102 → 9,200 ns, +1.1% | 6.7× |
+| macOS arm64, CPython 3.13.5 | 5,667 → 5,625 ns, −0.7% | 7.7× |
+| Linux x86_64, earlier session | 7,434 → 7,672 ns, +3.2% | 7.5× |
+
+The absolute figures differ by a third between hosts. **What every run agrees on
+is the shape**: increasing live orders tenfold moves the incremental median by a
+few per cent, while the full scan computing the identical envelopes grows by
+between six and eight times. `paper/01` §1.7 quotes only that shape, and only
+from the recorded file.
+
+Everything below this line is the round-by-round log of how the design got here,
+including the claims that were withdrawn. It is history, not the current index.
+
+---
+
 # Reproduction
 
 Environment used for the recorded output below:

@@ -2,8 +2,8 @@
 
 ## 3.1 Per flow
 
-One row per data flow, with the model chosen and the reason it is survivable.
-"Weakest the business can survive" is the test, not "strongest available".
+One row per flow, with the model chosen and why it is survivable. The test is
+"weakest the business can survive", not "strongest available".
 
 | Flow | Model | Defence |
 |---|---|---|
@@ -12,14 +12,14 @@ One row per data flow, with the model chosen and the reason it is survivable.
 | Admission sequence per lease | Gap-free total order at the ordering point | It accepts only the next number for a lease. The seal, the barrier and the settlement figure all rest on the log holding every admission that lease produced |
 | Authority binding | Registry at the ordering point, holder from the authenticated session | A lease id alone is a bearer token: without the binding, knowing one is enough to submit for any account (Appendix C.3) |
 | Fill terms | Checked at the ordering point against terms recorded at admission | A fill reported by a component that could be compromised is not evidence. Band, fee cap, direction, over-fill and identity are decided there; a refused fill writes nothing |
-| Lease issuance and generation | Single authoritative allocator per account, linearisable | Two issuers for one account could double-issue capacity against the same equity. The one place the design cannot weaken |
+| Lease issuance and generation | Single allocator per account, linearisable | Two issuers could double-issue against the same equity. The one place the design cannot weaken |
 | End of authority | Fence at the ordering point, linearisable | A clock comparison is not evidence a partitioned holder has stopped; a fence is. It need not be delivered to the holder |
-| Marks into the allocator | Bounded-stale | Marks set equity and `mark_plus`. Staleness costs capacity in both directions; inside the grid it does not cost safety, because gross is reserved at the highest mark the grid reaches |
+| Marks into the allocator | Bounded-stale | Staleness costs capacity in both directions and, inside the grid, not safety — for two reasons that are both needed: the add-on is reserved against `G+`, the highest gross the grid reaches, and `R` already covers the equity the account loses at any scenario in it |
 | Position feed into the allocator | Bounded-stale, eventually consistent | A fill the allocator has not seen was admitted under a lease and is inside that lease's absolute ceilings. Until a terminal ordered reconciliation it stays charged to that holder |
 | Holder occupancy | Over-approximated per holder while any is live; compacted from the log once none is | Per-holder figures are summed and do not net, which is necessary while an unreachable holder may still be acting (§5.4) |
 | Audit journal | Durable append-only, linearisable per shard | Replay must reproduce the decision exactly, which fails if entries reorder |
-| Dashboards, ledger balances | Eventually consistent; fold of the journal | An operator reading a stale capacity figure makes no decision the system will not re-check. Running case, Part 3 §1 |
-| Retry handling | At-least-once transport, end-to-end idempotency | Exactly-once is not a transport property; §5.3 gives the chain |
+| Dashboards, ledger balances | Eventually consistent; fold of the journal | A stale capacity figure drives no decision the system will not re-check |
+| Retry handling | At-least-once transport, end-to-end idempotency | Exactly-once is not a transport property; §5.3 |
 
 The row worth arguing is the position feed. A stale feed cannot under-state the
 requirement, and the reason is **not** that lag produces a smaller ceiling —
@@ -29,11 +29,8 @@ releases a holder's occupancy on the strength of not having heard from it.
 
 ## 3.2 CAP position of the matching core
 
-Unchanged from the running case:
-
-> During a partition that costs the leader its majority, the matching core stops
-> accepting orders rather than risk divergence.
-
+Unchanged from the running case: during a partition that costs the leader its
+majority, the matching core stops accepting orders rather than risk divergence.
 Halting is embarrassing; double-executing trades is existential.
 
 ## 3.3 CAP position of the admission plane
@@ -59,15 +56,14 @@ term ends, availability ends. The term length *is* the availability budget, and
 it is the same number as the tightening latency of §1.5.
 
 **When the term ends, all client order flow through that gateway stops, closing
-orders included.** The liquidator is venue-initiated internal machinery, not a
-client-facing close-only API, and this document does not contain one. What the
-design preserves under partition is **the venue's ability to bound its own
-loss**, not the client's ability to exit.
+orders included.** The liquidator is venue-initiated machinery, not a
+client-facing close-only API. What the design preserves under partition is **the
+venue's ability to bound its own loss**, not the client's ability to exit.
 
-**A client-facing reduce-only path is possible and not built.** It would need the
-same account-level check the liquidator performs, which means a central component
-the gateway can reach — and if that is reachable, the account is not partitioned
-in the way that matters. §6.4 states the regulatory position.
+**A client-facing reduce-only path is possible and not built.** It needs the same
+account-level check the liquidator performs, so a central component the gateway
+can reach — and if that is reachable, the account is not partitioned in the way
+that matters (§6.4).
 
 ## 3.4 Where the design refuses to weaken
 
@@ -79,7 +75,7 @@ in the way that matters. §6.4 states the regulatory position.
    computed from the log is computed over an incomplete one. E7's `no_fence` arm
    draws 7,790 on the insurance fund against 0 in the base run, takes 75
    transfers instead of 24, and cannot settle at all.
-3. **Append-only, ordered audit.** Reordering makes a decision unreproducible,
-   failing NFR row 10 and the reproducibility §6.4 offers a supervisor.
+3. **Append-only, ordered audit.** Reordering makes an admitted decision
+   unreproducible, which is the whole of what §6.4 offers a supervisor.
 
 Everything else is chosen at the weakest model that survives.

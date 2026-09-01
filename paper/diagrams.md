@@ -48,9 +48,9 @@ flowchart LR
 
   C1 --> G1
   C2 --> G2
-  G1 --> OP
-  G2 --> OP
-  LQ --> OP
+  G1 -- "session, lease_id, seq" --> OP
+  G2 -- "session, lease_id, seq" --> OP
+  LQ -- "session, liquidation lease" --> OP
   OP --> M1
   OP --> M2
   OP --> LG
@@ -66,12 +66,20 @@ flowchart LR
   A2 -. lease inputs .-> LG
   LG -. derive ceilings .-> G1
   LG -. derive ceilings .-> G2
+  A1 == "register lease_id to<br/>account, holder, kind" ==> OP
   A1 -. fence .-> OP
 ```
 
-Solid edges are the order path. Dashed edges are asynchronous and carry no
-per-order latency. Note that the allocator never reads a gateway: every figure it
-acts on comes from the log.
+Solid edges are the order path; dashed edges are asynchronous and carry no
+per-order latency. The allocator never reads a gateway: every figure it acts on
+comes from the log.
+
+The thick edge is the one this design would be unsound without. A `lease_id` on
+its own is a bearer token; the ordering point only knows which account, which
+holder and which authority kind a lease belongs to because the allocator — the
+single issuer, and therefore the only component that knows — registers the
+binding. The holder on each submission is resolved from the authenticated
+session, never read from the request body (§6.1, Appendix C.3).
 
 ---
 
@@ -98,9 +106,13 @@ flowchart TD
   C2 -- no --> R5[Refuse: gross envelope]
   C2 -- yes --> C3{debit after<br/>&lt;= debit ceiling?}
   C3 -- no --> R6[Refuse: debit envelope]
-  C3 -- yes --> SUB[Submit to ordering point<br/>lease_id, next seq]
-  SUB --> F4{Lease fenced,<br/>or sequence gap?}
-  F4 -- yes --> R7[Refuse: nothing recorded,<br/>no state moves]
+  C3 -- yes --> SUB[Submit to ordering point<br/>session, lease_id, next seq]
+  SUB --> B1{Lease registered?}
+  B1 -- no --> R7[Refuse: unknown_lease]
+  B1 -- yes --> B2{Session resolves to the bound<br/>holder? account and<br/>authority kind match?}
+  B2 -- no --> R8[Refuse: wrong_holder,<br/>wrong_account,<br/>wrong_authority_kind<br/>or unauthenticated]
+  B2 -- yes --> F4{Lease fenced,<br/>or sequence gap?}
+  F4 -- yes --> R9[Refuse: nothing recorded,<br/>no state moves]
   F4 -- no --> A1[Recorded with its terms:<br/>mark, band, fee cap]
   A1 --> A2[Commit locally, forward<br/>to the matching shard]
 ```
@@ -110,8 +122,11 @@ updated per order state change rather than recomputed, so admission costs one
 pass over the scenario grid however many orders are live. E3 measures that as
 flat in the order count and linear in the grid width.
 
-Nothing downstream re-derives S1 or the three comparisons. That is what §6.1
-means by the gateway being inside the trusted computing base.
+The boxes after `SUB` are the ordering point's, and they are the only checks here
+a compromised gateway cannot influence: they use the registered binding and the
+authenticated session rather than anything the request claims. Nothing downstream
+re-derives S1 or the three envelope comparisons, which is what §6.1 means by the
+gateway being inside the trusted computing base.
 
 ---
 

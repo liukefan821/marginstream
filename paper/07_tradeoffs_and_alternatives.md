@@ -37,16 +37,17 @@ admits at least as many orders as any decaying one with the same start.
 
 **What survives.** A gateway evaluating a shrinking curve can notice locally, on
 a market-state tick with no order present, that its consumption is higher than
-the venue would like, and report it. That is a trigger, not a capacity mechanism,
-and its value is unmeasured.
+the venue would like. That is a trigger, not a capacity mechanism, and its value
+is unmeasured.
 
 **Withdrawn with it:** E4's figure and E5's suppression comparison, both produced
 by superseded interfaces. Appendix A.2 keeps the record.
 
 ## ADR-3 — Where gross notional is measured
 
-**Decision.** Two figures: the requirement uses gross at the marks in force, the
-reserve uses gross at `mark_plus`.
+**Decision.** Two figures (§2.3): the requirement uses `G_k`, gross at the marks
+of the realised scenario; the reserve uses `G+`, gross at the highest mark the
+grid reaches.
 
 **Alternative — one figure at the current mark.** Unsafe. `A` is a function of
 gross, gross depends on the mark, and a lease admits for a term over which the
@@ -55,13 +56,12 @@ mark moves.
 | Reserve measured at | Lots admitted | Requirement after the move | Equity after | Over by |
 |---|---|---|---|---|
 | the issuance mark, 1000 | 296 | 1,320,871 | 938,728 | 382,143 |
-| `mark_plus`, 1200 | 249 | 942,615 | 948,457 | inside by 5,842 |
+| `G+`, at mark 1200 | 249 | 942,615 | 948,457 | inside by 5,842 |
 
 **Cost.** 47 lots of 296, about 16% of capacity in that configuration — the price
 of making both terms maxima over the same scenario set.
 
-**Scope.** `mark_plus` is an upper bound on the per-scenario maximum in every
-case. It is *tight* only with one factor and non-negative loadings, where the gap
+**Scope.** `G+` is an upper bound on the per-scenario maximum in every case. It is *tight* only with one factor and non-negative loadings, where the gap
 is the rounding, at most one minor unit per lot (m4a). With signed loadings the
 symbols peak at different scenarios: m4b gives 24,000 against a best single
 scenario of 20,000. The bound stays safe; the tightness claim does not
@@ -88,11 +88,10 @@ case makes for balances being a fold of the journal.
 
 **Decision.** By account, sixteen shards.
 
-**Alternative — by symbol, matching the core.** Rejected because margin is an
-account-level quantity: shards would have to combine partial views to produce one
-account's ceilings, which reintroduces the coordination the design exists to
-remove. The two partitionings are orthogonal and neither needs the other to be
-correct (§2.1).
+**Alternative — by symbol, matching the core.** Rejected: margin is an
+account-level quantity, so shards would combine partial views to produce one
+account's ceilings, reintroducing the coordination the design exists to remove.
+The two partitionings are orthogonal (§2.1).
 
 ## ADR-6 — What ends a holder's authority
 
