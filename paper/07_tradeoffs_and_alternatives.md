@@ -21,27 +21,19 @@ creates.
 
 ## ADR-2 — Flat ceiling for the term, or a schedule over market states
 
-**Decision.** A flat ceiling. **This reverses an earlier decision.**
-
-The first version issued capacity as a schedule contracting with a published
-market state index and argued from E4 that a scalar lease spent 236 of 480 ticks
-above equity. The mechanism producing those numbers charged the *increment* an
-order added rather than the absolute envelope, so a leg flipped from short to
-long looked free (c1). Under the corrected condition there is no market state at
-all.
-
-**Why a schedule cannot buy safety.** A lease cannot remove a position it has
-already admitted. Capacity that shrinks restricts the *next* admission, not the
-exposure already created; a flat ceiling at the solved level is equally safe and
-admits at least as many orders as any decaying one with the same start.
+**Decision.** A flat ceiling. **This reverses an earlier decision**, and the reason is short: a lease cannot
+remove a position it has already admitted, so capacity that shrinks with the
+market restricts the *next* admission and does nothing about the exposure already
+created. A flat ceiling at the solved level is equally safe and admits at least
+as many orders as any decaying one with the same start. The figures that argued
+otherwise came from a mechanism that charged the increment rather than the
+absolute envelope (c1), and are withdrawn with it. Appendix A.1 has the full
+reversal; Appendix A.2 keeps the abuse cases the schedule created.
 
 **What survives.** A gateway evaluating a shrinking curve can notice locally, on
 a market-state tick with no order present, that its consumption is higher than
 the venue would like. That is a trigger, not a capacity mechanism, and its value
 is unmeasured.
-
-**Withdrawn with it:** E4's figure and E5's suppression comparison, both produced
-by superseded interfaces. Appendix A.2 keeps the record.
 
 ## ADR-3 — Where gross notional is measured
 
@@ -119,7 +111,7 @@ otherwise.
   against equity, so we would not claim the capacity control is sound without it
   (§6.3 A1).
 - **A client-facing reduce-only path.** §3.3 says why, and what it costs.
-- **Replication of the ordering point, and allocator failover.** Appendix B draws
+- **Replication of the ordering point, and allocator failover.** Figure 5 draws
   the target deployment and labels it unbuilt.
 - **Anything that identifies the agent behind an order.** The mechanism is
   capacity control, not surveillance.

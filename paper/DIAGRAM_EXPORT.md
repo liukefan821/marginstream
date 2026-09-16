@@ -24,7 +24,7 @@ Check after all four:
 
     ls paper/figures/
 
-Expect five files: four from `paper/diagrams.md` and one from Appendix B. If a paste renders as an error message rather than a
+Expect five files, all from `paper/diagrams.md`. If a paste renders as an error message rather than a
 diagram, the block was copied with a fence line included.
 
 The five blocks have been checked structurally — correct diagram kind, no stray

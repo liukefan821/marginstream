@@ -1,20 +1,16 @@
-# Diagrams
+# 2.9 Architecture diagrams
 
-Mermaid source. GitHub renders these inline; for the PDF, paste a block into
-mermaid.live and export SVG (see `paper/DIAGRAM_EXPORT.md`).
+The three views §2 requires — component, data flow, deployment — plus the two the
+failure and degradation stories need. Mermaid source; `paper/DIAGRAM_EXPORT.md`
+covers rendering.
 
 ---
 
 ## Figure 1 — Component view
 
 Two authorities partitioned on different keys, and one ordering point that both
-of them and every recovery path read from. Matching is partitioned by symbol
-because price-time priority is a total order per book. The allocator is
-partitioned by account because margin is an account-level quantity. Nothing on
-the order path crosses either partition.
-
-The liquidator is drawn apart from the gateways on purpose: it is the only holder
-whose orders are checked against the merged account rather than against a
+of them and every recovery path read from. The liquidator is drawn apart from the
+gateways because its orders are checked against the merged account rather than a
 ceiling, and its transfers do not touch the order books.
 
 ```mermaid
@@ -70,70 +66,68 @@ flowchart LR
   A1 -. fence .-> OP
 ```
 
-Solid edges are the order path; dashed edges are asynchronous and carry no
-per-order latency. The allocator never reads a gateway: every figure it acts on
-comes from the log.
-
-The thick edge is the one this design would be unsound without. A `lease_id` on
-its own is a bearer token; the ordering point only knows which account, which
-holder and which authority kind a lease belongs to because the allocator — the
-single issuer, and therefore the only component that knows — registers the
-binding. The holder on each submission is resolved from the authenticated
-session, never read from the request body (§6.1, Appendix C.3).
+Solid edges are the order path; dashed edges are asynchronous. The allocator
+never reads a gateway: every figure it acts on comes from the log. The thick edge
+is the one this design would be unsound without — a `lease_id` alone is a bearer
+token, and the ordering point knows which account, holder and authority kind it
+belongs to only because the single issuer registers the binding.
 
 ---
 
 ## Figure 2 — Data flow for one order
 
-Three envelope checks, all against absolute figures rather than the increment the
-order adds, and then a submission the ordering point can refuse for reasons no
-gateway is consulted about.
+Three stages. The first two are the gateway's and nothing downstream re-derives
+them; the third is the ordering point's and a compromised gateway cannot
+influence it. Refusals are collapsed to one node per stage.
 
 ```mermaid
 flowchart TD
   O[Order arrives<br/>client order ID, symbol, qty] --> F0{Gateway finished<br/>recovering?}
-  F0 -- no --> R0[Refuse: recovering<br/>admits nothing]
-  F0 -- yes --> F1{Ceilings present<br/>for this account?}
-  F1 -- no --> R1[Refuse: no lease]
-  F1 -- yes --> F2{Term still running,<br/>mode not quarantine?}
-  F2 -- no --> R2[Refuse: expired<br/>or quarantined]
-  F2 -- yes --> F3{Lease generation<br/>below highest seen?}
-  F3 -- yes --> R3[Refuse: gateway stale<br/>fail closed]
-  F3 -- no --> S1[Update worst-fill totals<br/>one pass over the grid]
-  S1 --> C1{R_wf after<br/>&lt;= risk ceiling?}
-  C1 -- no --> R4[Refuse: risk envelope]
-  C1 -- yes --> C2{G_wf after<br/>&lt;= gross ceiling?}
-  C2 -- no --> R5[Refuse: gross envelope]
-  C2 -- yes --> C3{debit after<br/>&lt;= debit ceiling?}
-  C3 -- no --> R6[Refuse: debit envelope]
-  C3 -- yes --> SUB[Submit to ordering point<br/>session, lease_id, next seq]
-  SUB --> B1{Lease registered?}
-  B1 -- no --> R7[Refuse: unknown_lease]
-  B1 -- yes --> B2{Session resolves to the bound<br/>holder? account and<br/>authority kind match?}
-  B2 -- no --> R8[Refuse: wrong_holder,<br/>wrong_account,<br/>wrong_authority_kind<br/>or unauthenticated]
-  B2 -- yes --> F4{Lease fenced,<br/>or sequence gap?}
-  F4 -- yes --> R9[Refuse: nothing recorded,<br/>no state moves]
-  F4 -- no --> A1[Recorded with its terms:<br/>mark, band, fee cap]
-  A1 --> A2[Commit locally, forward<br/>to the matching shard]
+  F0 --> F1{Ceilings present<br/>for this account?}
+  F1 --> F2{Term running,<br/>not quarantined?}
+  F2 --> F3{Generation not<br/>below highest seen?}
+  F3 --> E([to the envelopes])
+  F0 -. no .-> RA
+  F1 -. no .-> RA
+  F2 -. no .-> RA
+  F3 -. no .-> RA[Refuse, with a reason code<br/>five of them, §2.5]
 ```
 
-The whole per-order margin cost is the one pass at S1: the running totals are
-updated per order state change rather than recomputed, so admission costs one
-pass over the scenario grid however many orders are live. E3 measures that as
-flat in the order count and linear in the grid width.
+```mermaid
+flowchart TD
+  E([from the authority checks]) --> S1[Update worst-fill totals<br/>one pass over the scenario grid]
+  S1 --> C1{R_wf after<br/>&lt;= risk ceiling?}
+  C1 --> C2{G_wf after<br/>&lt;= gross ceiling?}
+  C2 --> C3{debit after<br/>&lt;= debit ceiling?}
+  C3 --> SUB([to the ordering point])
+  C1 -. no .-> RB
+  C2 -. no .-> RB
+  C3 -. no .-> RB[Refuse: risk, gross<br/>or debit envelope]
+```
 
-The boxes after `SUB` are the ordering point's, and they are the only checks here
-a compromised gateway cannot influence: they use the registered binding and the
-authenticated session rather than anything the request claims. Nothing downstream
-re-derives S1 or the three envelope comparisons, which is what §6.1 means by the
-gateway being inside the trusted computing base.
+```mermaid
+flowchart TD
+  SUB([from the gateway]) --> B1{Lease registered?}
+  B1 --> B2{Session resolves to the bound<br/>holder? account and<br/>authority kind match?}
+  B2 --> B3{Not fenced, and<br/>the next sequence number?}
+  B3 --> A1[Recorded with its terms:<br/>mark, band, fee cap]
+  A1 --> A2[Commit locally, forward<br/>to the matching shard]
+  B1 -. no .-> RC
+  B2 -. no .-> RC
+  B3 -. no .-> RC[Refuse. Nothing recorded,<br/>no state moves<br/>seven reason codes, §6.1]
+```
+
+The whole per-order margin cost is the one pass over the scenario grid in stage
+two: the running totals are updated per order state change rather than
+recomputed, so admission is flat in the order count and linear in the grid width
+(E3).
 
 ---
 
 ## Figure 3 — Liquidation and settlement
 
-The path from a shortfall to capacity being returned. Three of the boxes are
-where a fault matters, and E7 injects one at each.
+The path from a shortfall to capacity being returned, in three stages. E7 injects
+a fault at each.
 
 ```mermaid
 flowchart TD
@@ -144,40 +138,49 @@ flowchart TD
   N1 -- yes --> N2
   N2 --> CA[Cancel every live order]
   CA --> K1{Acknowledged at<br/>the ordering point?}
-  K1 -- recorded, notice lost --> K2[Order is released<br/>local view is stale]
-  K1 -- never confirmed --> K3[Order stays live<br/>keeps its reservation]
-  K2 --> U
+  K1 -- recorded,<br/>notice lost --> K2[Order released<br/>local view is stale]
+  K1 -- never<br/>confirmed --> K3[Order stays live<br/>keeps its reservation]
+  K2 --> U([to the unwind])
   K3 --> U
-  U[Unwind: propose a proportional<br/>basket, check both merged<br/>envelopes do not rise]
-  U --> UC{Check passes?}
-  UC -- no --> UH[Halve the fraction,<br/>down to one lot, then stall]
+```
+
+```mermaid
+flowchart TD
+  U([from the cancel phase]) --> P[Propose a proportional basket,<br/>check both merged envelopes<br/>do not rise]
+  P --> UC{Check passes?}
+  UC -- no --> UH[Halve the fraction, down to<br/>one lot, then stall]
   UC -- yes --> CB[Commit basket as ONE record<br/>internal transfer, venue is<br/>the counterparty]
   CB --> CR{Crash before the<br/>local fold?}
   CR -- yes --> CRR[Rebuild from the log<br/>basket ID lands it once]
-  CR -- no --> FL
+  CR -- no --> FL{Position flat?}
   CRR --> FL
-  FL{Position flat?}
-  FL -- no --> U
-  FL -- yes --> FQ[Fence the liquidator's<br/>own basket authority]
+  FL -- no --> P
+  FL -- yes --> S([to the settlement])
+```
+
+```mermaid
+flowchart TD
+  S([from the unwind]) --> FQ[Fence the liquidator's<br/>own basket authority]
   FQ --> ST[Stop issuance,<br/>take barrier B]
   ST --> B1{Every lease fenced<br/>and B gap-free?}
-  B1 -- no --> B2[Refuse: authority still live]
-  B1 -- yes --> B3[Rebuild occupancy from<br/>the log at B: risk, gross<br/>reach, unabsorbed debit]
+  B1 -- no --> B2[Refuse:<br/>authority still live]
+  B1 -- yes --> B3[Rebuild occupancy from the<br/>log at B: risk, gross reach,<br/>unabsorbed debit]
   B3 --> B4[Install under credit-version<br/>CAS, then resume issuance]
 ```
 
-The two cancel outcomes are the two different facts of §5.4, and they are why the
-box has two labelled exits rather than one. The barrier refuses on `no_fence` and
-on a live liquidator; E7 exercises both refusals.
+The cancel check has two labelled exits because they are two different facts
+(§5.4): a cancel recorded at the ordering point releases the order, one the
+matching side never confirmed does not. The barrier refuses on `no_fence` and on
+a live liquidator, and E7 exercises both refusals.
 
 ---
 
 ## Figure 4 — Failure paths and the degradation ladder
 
 Every transition is labelled with what causes it and what the venue still accepts
-in that state. The state a previous version of this figure called REDUCE_ONLY has
-been removed: a gateway does not accept locally-judged risk-reducing orders,
-because c9 shows that judgement is unsound across gateways.
+in that state. A state a previous version called REDUCE_ONLY has been removed: a
+gateway does not accept locally-judged risk-reducing orders, because c9 shows
+that judgement is unsound across gateways.
 
 ```mermaid
 stateDiagram-v2
@@ -217,10 +220,77 @@ stateDiagram-v2
     end note
 ```
 
-The four edges into FENCED are the four ways this design loses its authority, and
-all four fail closed for new risk. Risk reduction does not happen at the gateway
-in any of them; it happens on the liquidation path, which is the CAP position §3.3
-defends and the correction that removed REDUCE_ONLY.
+The four edges into FENCED are the four ways this design loses authority, and all
+four fail closed for new risk. Risk reduction happens on the liquidation path in
+every one of them, which is the CAP position §3.3 defends and the correction that
+removed REDUCE_ONLY.
 
-E6 measures what the FENCED-to-SETTLING path costs as a function of the detection
-delay, and E7 injects a fault at each labelled box.
+---
+
+## Figure 5 — Deployment view: target, not built
+
+Everything measured in this document runs in a single process against an
+in-memory ordering point. **No part of this figure has been implemented or
+measured.** It is drawn because the architecture is not complete without saying
+where each component lives and what replicates it, and it is labelled because a
+diagram of unbuilt infrastructure next to measured results otherwise invites the
+reader to give both the same standing.
+
+```mermaid
+flowchart TB
+  subgraph AZ[Availability zone]
+    subgraph EDGE[Edge tier - stateless, scales horizontally]
+      GWX[Ingress gateways<br/>N instances<br/>ceilings held locally]
+    end
+
+    subgraph OPZ[Ordering point - the single serialisation point]
+      OPL[Leader]
+      OPF[Followers<br/>2 replicas]
+    end
+
+    subgraph COREZ[Core tier - pinned cores, no GC on hot path]
+      MS1[Matching shard leaders 1..8]
+      MSR[Matching shard followers<br/>2 per shard]
+    end
+
+    subgraph ALLOCZ[Allocator tier - 16 shards by account]
+      AL1[Allocator leaders 1..16<br/>NOT IMPLEMENTED:<br/>snapshot and failover]
+      ALR[Allocator followers<br/>2 per shard]
+    end
+
+    LQZ[Liquidator<br/>one per account under<br/>liquidation, venue-initiated]
+
+    subgraph DATA[Durability]
+      RL[(Raft log<br/>orders, fills, cancels,<br/>fences, baskets, barriers,<br/>lease inputs)]
+      SN[(Snapshots<br/>bound replay time,<br/>not a correctness requirement)]
+    end
+
+    MDP[Market data publisher<br/>multi-source, trimmed]
+  end
+
+  GWX --> OPL
+  LQZ --> OPL
+  OPL --- OPF
+  OPL --> MS1
+  MS1 --- MSR
+  AL1 --- ALR
+  OPL --> RL
+  MS1 --> RL
+  AL1 --> RL
+  RL --> SN
+  RL -. rebuild .-> GWX
+  RL -. occupancy at a barrier .-> AL1
+  MDP -. marks .-> AL1
+```
+
+Three things here are load-bearing and unbuilt, and they are the three §5.7
+lists. The ordering point is replicated, and every claim about fencing, sealing
+and barriers assumes it survives a node loss without losing or reordering the
+log. The allocator has no snapshot or failover: it is the only component that
+cannot rebuild itself from the log. And the liquidator is venue infrastructure,
+which is what makes its transfers internal (§5.4) and what puts it inside the
+trusted computing base (§6.1).
+
+What the recovery evidence supports is the property replication needs — each
+component's state is a deterministic, idempotent fold of one ordered log — and
+not that the replication works.

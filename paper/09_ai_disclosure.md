@@ -68,7 +68,7 @@ disk was passing on an empty sample.
   about the account, not venue-level solvency.
 - The replay rate of §5.5 is assumed, not measured (§8.1).
 - §6.3 A3 is argued, not measured.
-- Replication and allocator failover are designed and not built (Appendix B).
+- Replication and allocator failover are designed and not built (Figure 5).
 - Superseded results — E4's schedule comparison, E5's suppression sweep — are in
   `experiments/superseded/` and are cited nowhere as current.
 

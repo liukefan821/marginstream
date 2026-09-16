@@ -9,7 +9,7 @@
 | Account positions and equity | Read per issuance; written on every fill | In-memory in the allocator shard, snapshotted | A row store serialises the hot accounts, which are the market makers |
 | Log, journal and ledger entries | Sequential append at ≈ 21 MB/s (§2.7) | Append-only segments on NVMe | Nothing is updated in place |
 | Balances | Fold of the journal, materialised | In-memory hash, snapshotted with the journal offset | Balances as source of truth is the running case's anti-pattern, Part 3 §7 |
-| Historical balance-at-time-T | Rare, analytical, wide scans | Columnar store fed by change data capture | Otherwise an analytical workload sits behind the trading lock |
+| Historical balance-at-time-T | Rare, analytical | Columnar store fed by change data capture | Otherwise an analytical workload sits behind the trading lock |
 | Scenario grid, add-on parameters, gateway weights, band and fee policy, credit version, authority bindings | Read on every derivation and replay | Versioned data on the log, activated at a sequence | As configuration they make replay non-deterministic |
 
 The last row is specific to this design: those values look like configuration an
@@ -23,6 +23,11 @@ postings sum to zero per asset, so value is moved by code and never created.
 Accounts are keyed `(ownerId, assetId, accountType)` over `USER_AVAILABLE`,
 `USER_MARGIN_HOLD`, `USER_UNREALISED`, `EXCHANGE_FEE`, `INSURANCE_FUND`,
 `EXCHANGE_HOT`, `EXCHANGE_COLD`, `SUSPENSE` and `EXTERNAL_SETTLEMENT`.
+`USER_MARGIN_HOLD` is the running case's `USER_HOLD` under cross-margin: there
+the hold is per order and released when that order resolves, here it is the
+account's single encumbrance and moves with the portfolio requirement.
+`USER_UNREALISED`, `INSURANCE_FUND` and `EXTERNAL_SETTLEMENT` have no
+counterpart in a spot venue.
 
 Signs follow each account's normal balance — user and asset accounts debit, venue
 liabilities credit — and an entry's postings sum to zero once signs are applied.

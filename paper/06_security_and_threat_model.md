@@ -96,11 +96,7 @@ realised loss not yet folded in. The defences are §4.3's cash-flow identity, th
 account being an independently rebuildable fold of the log, and multi-sourced
 marks. None is a proof; a compromised equity path is a compromised mechanism.
 
-### A2 — A compromised gateway
-
-Covered in §6.1; it is a trust-boundary question, not a business-logic one.
-
-### A3 — Routing to concentrate an account's flow
+### A2 — Routing to concentrate an account's flow
 
 A gateway prices nothing globally: it compares absolute figures against its own
 ceilings and gets no credit for offsets held elsewhere, so the account is charged
@@ -119,11 +115,16 @@ offsetting legs together and so shrink the gap; usage-aware weights do not shrin
 it at all, they only reduce stranded capacity on gateways an account is not
 using.
 
-### Two lesser cases, recorded and not developed
+### A3 — Stalling a liquidation
 
-Fee-cap gaming through many small fills, bounded by the per-lot cap (d4); and
-stalling a liquidation by leaving orders whose cancels are never acknowledged,
-which the settlement keeps reserved rather than releases (l13).
+Leaving orders the matching side never acknowledges cancels for keeps the account
+in the fenced state indefinitely: the settlement reserves for them rather than
+releasing them (l13), so the capacity stays occupied. The venue's exposure is
+bounded — the reservation is exactly the worst-fill figure — but the account
+cannot be closed out and re-opened. Detection is §8.2's fenced-but-not-settled
+alert; there is no mitigation in the design. Fee-cap gaming through many small
+fills is the fourth case and is bounded by the per-lot cap the ordering point
+enforces (d4).
 
 ## 6.4 Regulatory posture
 
@@ -150,8 +151,6 @@ Six signals, all paged on and listed in §8.2: equity divergence between what th
 allocator solved against and what a rebuild from the log implies; ceilings
 summing above the solve; a gateway's figures above its ceilings; a lease fenced
 but not settled beyond a bound; mark divergence across sources; and any
-authority-binding refusal, which should be zero and otherwise means a component
-is submitting under a lease that is not its own.
-
-The gap this list cannot close is §6.1's: nothing here detects a gateway that
-lies about arithmetic nobody re-derives, until the account's own figures move.
+authority-binding refusal, which should be zero. The gap this list cannot close
+is §6.1's: nothing detects a gateway that lies about arithmetic nobody
+re-derives, until the account's own figures move.

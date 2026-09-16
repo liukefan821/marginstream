@@ -176,7 +176,7 @@ Utilisation is capped near half of equity before the add-on reserve. In E1's
 binding trial — every order filled at the worst price and fee the policy allows —
 the risk and debit envelopes reach 99% and the requirement is 49% of equity, with
 no breach. The offset decomposition gives up is separately §2.3's sub-additivity
-gap, which §7 uses to price forbidding offset entirely.
+gap (§7).
 
 ## 2.5 Ending authority
 
@@ -230,6 +230,20 @@ Not on the log: the per-gateway ceilings, which cost ≈ 32 MB/s against an ≈ 
 MB/s order stream to carry a value each gateway derives from ≈ 8 MB/s of inputs
 (ADR-4 has the arithmetic). Also not on the log: the scenario vectors and running
 gross, caches of pure functions of the order state.
+
+**Batching, and what it costs here.** The running case replicates a batch of
+sequenced commands rather than one at a time, because replication cost is
+per-round-trip and amortises (Part 4 §3). The same applies to admissions, and it
+interacts with two things this design added. A batch is committed or not as a
+unit, so the gap-free per-lease sequence survives batching only if the ordering
+point assigns numbers at batch entry and refuses the whole batch on any gap —
+partial commit would leave a hole that a seal later claims to cover. And a fence
+arriving mid-batch must take effect at the batch boundary, not inside it:
+admitting the first half of a batch under a lease fenced before the second half
+would produce admissions after the seal's terminal sequence. Both are
+resolvable — number at entry, fence between batches — and neither is
+implemented; the simulator commits one admission at a time, which is the
+worst case for replication cost and the simplest case for the argument.
 
 ## 2.8 What this architecture does not do
 

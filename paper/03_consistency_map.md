@@ -18,8 +18,7 @@ One row per flow, with the model chosen and why it is survivable. The test is
 | Position feed into the allocator | Bounded-stale, eventually consistent | A fill the allocator has not seen was admitted under a lease and is inside that lease's absolute ceilings. Until a terminal ordered reconciliation it stays charged to that holder |
 | Holder occupancy | Over-approximated per holder while any is live; compacted from the log once none is | Per-holder figures are summed and do not net, which is necessary while an unreachable holder may still be acting (§5.4) |
 | Audit journal | Durable append-only, linearisable per shard | Replay must reproduce the decision exactly, which fails if entries reorder |
-| Dashboards, ledger balances | Eventually consistent; fold of the journal | A stale capacity figure drives no decision the system will not re-check |
-| Retry handling | At-least-once transport, end-to-end idempotency | Exactly-once is not a transport property; §5.3 |
+| Dashboards, ledger balances, retry handling | Eventually consistent; fold of the journal; at-least-once with end-to-end idempotency | A stale capacity figure drives no decision the system will not re-check; exactly-once is not a transport property (§5.3) |
 
 The row worth arguing is the position feed. A stale feed cannot under-state the
 requirement, and the reason is **not** that lag produces a smaller ceiling —
@@ -63,7 +62,7 @@ venue's ability to bound its own loss**, not the client's ability to exit.
 **A client-facing reduce-only path is possible and not built.** It needs the same
 account-level check the liquidator performs, so a central component the gateway
 can reach — and if that is reachable, the account is not partitioned in the way
-that matters (§6.4).
+that matters.
 
 ## 3.4 Where the design refuses to weaken
 

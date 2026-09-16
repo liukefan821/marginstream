@@ -13,7 +13,19 @@ empty sample, and exited 0.
 Apply these by hand after extracting. Each is a path removed from the package
 relative to the previous one.
 
-### This package
+### Package of 2026-09-16 (figures and page budget)
+
+    git rm paper/B_target_deployment.md
+
+Figure 5 moved into `paper/diagrams.md` as the deployment view, which §2 of the
+capstone brief requires in the body rather than an appendix. Appendix B no longer
+exists; §5.7, §7 and §9 now point at Figure 5.
+
+New in this package: `paper/figures/` (nine rendered panels, PDF and SVG),
+`paper/assemble_whitepaper.py` (markdown to LaTeX, figures embedded) and
+`paper/MarginStream_whitepaper.pdf`.
+
+### Previous package
 
     git mv results/e1_safety.json       results/superseded/e1_safety.json
     git mv results/e1_worst_fill.json   results/superseded/e1_worst_fill.json
@@ -72,18 +84,32 @@ manifest above in the real checkout and extract there.
 No file under `marginstream/`, `tests/` or `experiments/` changed. `results/`
 changed by re-recording and archiving, which is the point of the round.
 
+## Page budget
+
+The brief allows **≤ 20 pages + appendices**. Item 9 of its required contents is
+itself named "AI-disclosure appendix", so the body that counts is §1–§8.
+
+    §1-§8    20 pages
+    §9        1 page
+    A, C      4 pages
+    total    25 pages
+
+§1–§8 is at the limit, not over it. If the grader counts §9 in the body it is 21,
+so the first cut if one is needed is §9 moved behind the appendix divider, which
+is where its own title says it belongs.
+
 ## Outstanding before submission
 
 1. **`paper/09` §9.5 ownership tables are `TODO`.** Four members, nine sections
    and four modules. This cannot be filled in from here and **must not reach the
    PDF as `TODO`**.
-2. **Five Mermaid figures have never been rendered.** Four in `paper/diagrams.md`
-   and Figure 5 in Appendix B. They are checked structurally only; render all
-   five at mermaid.live before exporting (`paper/DIAGRAM_EXPORT.md`).
-3. **No PDF has been produced.** The course constraint is 20 pages, not a word
-   count. The body is 11,474 words by GNU `wc -w`; BSD `wc` on macOS reads about
-   127 higher, which is exactly the number of standalone non-ASCII tokens, so the
-   two counts differ by tool and not by content. Neither settles the page count.
+2. **Figures are rendered and embedded.** Mermaid CLI with a headless browser,
+   native SVG labels rather than HTML, Times to match the body. Figures 2 and 3
+   are split into panels because the single-chain versions came out 35cm and
+   70cm tall at column width.
+3. **The PDF is built and the figures are rendered.** `paper/MarginStream_whitepaper.pdf`
+   is the current build; `paper/assemble_whitepaper.py` regenerates it from the
+   markdown. Smallest figure label is 6.2pt after scaling.
 4. **Course-pack cross-references unverified.** The running-case citations
    (Part 2 §3, Part 3 §1/§4/§7, Part 5 §1) have not been checked against the
    source material.

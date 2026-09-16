@@ -38,9 +38,9 @@ The full nine-step chain is Appendix C.1. Its shape:
   and moved state the authority then refused;
 - **a fill** is refused, writing nothing, on a reused identifier with different
   figures, an unknown or cancelled order, the wrong direction, an over-fill, a
-  price outside the recorded band, or a fee above the cap;
-- **a basket** is one record under one identifier, idempotent on retry;
-- **the matching shard** applies a client order ID at most once.
+  price outside the recorded band, or a fee above the cap; **a basket** is one
+  record under one identifier, idempotent on retry; **the matching shard**
+  applies a client order ID at most once.
 
 Two costs stated rather than hidden. A retry routed through another gateway is a
 new admission attempt there and may consume envelope, released at the next
@@ -144,7 +144,7 @@ seed and one price path. They are not a bound.
 
 ## 5.5 Recovery-time arithmetic
 
-State is not one snapshot: the tiers of Appendix B fail independently and are
+State is not one snapshot: the tiers of Figure 5 fail independently and are
 sized separately.
 
 | Tier | Snapshot | Log tail over 5 min | Conclusion |
@@ -159,23 +159,19 @@ The one figure that can be checked from this document is the replay volume:
     at an assumed 10x live replay rate, the log tail takes about 30 s,
     excluding snapshot fetch and leader election.
 
-Two caveats that the arithmetic does not carry. The 21 MB/s is a lower bound: it
-counts order commands and lease inputs and excludes fills, cancels, fences,
-baskets, framing, and any replication factor. And the 10× replay rate is
-**assumed**, not measured — it is the first chaos experiment (§8.1).
+Two caveats the arithmetic does not carry: 21 MB/s is a lower bound, counting
+order commands and lease inputs but not fills, cancels, fences, baskets, framing
+or any replication factor; and the 10× replay rate is **assumed**, not measured
+(§8.1).
 
 **Warm failover is a design target, not a result.** Row 8's three seconds would
-be election plus commit catch-up on the tail, and neither replication nor leader
-election is implemented (§5.7), so there is no measurement to derive it from.
-What *is* established is the property failover would need:
-`tests/test_recovery.py` and E4's 3,642 injected crashes show snapshot plus
-replay reproducing the state the whole log implies, with zero equivalence
-failures, including 2,364 mid-partial-fill and 819 stale-snapshot cases.
-
-During any such window gateways keep their ceilings and admit inside them; when
-terms expire they admit nothing at all, and risk reduction is the liquidation
-path's job (§3.3). A failover longer than the shortest outstanding term therefore
-leaves accounts with no ingress.
+be election plus commit catch-up, and neither replication nor leader election is
+implemented (§5.7). What *is* established is the property failover would need:
+E4's 3,642 injected crashes show snapshot plus replay reproducing the state the
+whole log implies, zero equivalence failures, including 2,364 mid-partial-fill
+and 819 stale-snapshot cases. During such a window gateways admit inside the
+ceilings they hold and, once terms expire, nothing at all — so a failover longer
+than the shortest outstanding term leaves accounts with no ingress.
 
 ## 5.6 Zero-downtime upgrade
 
@@ -189,17 +185,11 @@ derivation mid-session — a real operational loss, and the price of NFR row 10.
 **This is a deterministic simulator, not a deployment.** Everything measured runs
 in one process against an in-memory ordering point. A replicated ordering point,
 allocator high availability, leader election and real distributed deployment are
-*designed* here and *not built* (Appendix B). The recovery results establish that
-the fold from the log is deterministic and idempotent — the property replication
-would need — and not that replication works.
+*designed* and *not built* (Figure 5); the recovery results establish the
+property replication would need, not that replication works. The allocator alone
+cannot rebuild itself from the log, and that is not implemented either.
 
-**The allocator's own crash and failover are not implemented.** The gateway, the
-account and the settlement path rebuild from the log and are tested doing so; the
-allocator does not.
-
-**The liquidation transfer moves risk onto the venue** (above), and venue-side
-capital limits and insurance-fund sizing are outside this document.
-
-Also out: the waterfall beyond the unwind — how much to reduce, in what order,
-auto-deleveraging, who absorbs a shortfall the fund cannot — the replay rate of
-§5.5, and cross-datacentre replication.
+**The liquidation transfer moves risk onto the venue** (above): venue-side
+capital limits and insurance-fund sizing are outside this document, as are the
+waterfall beyond the unwind, the replay rate of §5.5, and cross-datacentre
+replication.

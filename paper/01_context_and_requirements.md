@@ -2,16 +2,14 @@
 
 ## 1.1 The venue
 
-MarginStream is a derivatives venue offering linear perpetual and dated futures
-on 40 underlyings, 120 contracts, to APAC retail and institutional clients. All
-120 are margined against a single account balance rather than contract by
-contract. Leverage is capped at 20×; parameters below assume a median active
-account at 8×.
-
-The commercial reason for a unified account is capital efficiency: a client long
-one contract and short a correlated one should not fund both legs separately.
-Any design that quietly removes the offset removes the reason the venue exists,
-so the cost of every conservative step below is stated as a number.
+MarginStream is a derivatives venue offering linear perpetual and dated futures on
+40 underlyings, 120 contracts, to APAC retail and institutional clients, all
+margined against a single account balance rather than contract by contract.
+Leverage is capped at 20×; parameters below assume a median active account at 8×.
+The commercial reason for a unified account is capital efficiency — a client long
+one contract and short a correlated one should not fund both legs separately — so
+any design that quietly removes the offset removes the reason the venue exists,
+and the cost of every conservative step below is stated as a number.
 
 Scale: 10⁶ registered accounts, 10⁵ with open positions, 10⁴ whose positions or
 marks change between two issuances. A median account holds 5 contracts; the tail
@@ -42,6 +40,16 @@ each fails.
 into a second authority: a margin allocator that runs off the order path and
 hands **each ingress gateway** a locally checkable share of the account's
 capacity. Matching shards hold no lease and make no margin decision.
+
+**Where this sits relative to the nearest candidate system.** A real-time risk
+and liquidation engine for a margin venue is one of the five offered, and its
+hard parts are after the event: pricing the mark, ordering the waterfall, sizing
+the fund. Those are named out of scope here (§5.7) and this document does not
+claim them. The hard part taken instead is before the event, and it is a
+different one: a globally non-additive invariant enforced pre-trade over books
+that are sharded by symbol and written concurrently. A risk engine does not meet
+it because it assumes the account-level check has already been serialised
+somewhere; this design is about what happens when it cannot be.
 
 ## 1.3 Scope
 
