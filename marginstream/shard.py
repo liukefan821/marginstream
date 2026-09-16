@@ -1,5 +1,12 @@
 """Symbol shard.
 
+LEGACY — superseded. Kept only because `experiments/superseded/`
+imports it. The mechanism described below (per-shard leases, a marginal-R
+charge, a market-state curve) is withdrawn; see ADR-2 and ADR-3 in
+`paper/07_tradeoffs_and_alternatives.md`. The current path is
+`gateway2.py` + `allocator2.py` + `sequencer.py`.
+
+
 Holds positions for its own symbols and one lease per account. Admission is a
 local computation: price the order's marginal R against this shard's positions
 only, then compare with the remaining lease. No cross-shard read.

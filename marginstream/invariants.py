@@ -1,5 +1,9 @@
 """Invariant checks.
 
+LEGACY — superseded. Checks the withdrawn per-shard
+quantities. Nothing current imports it.
+
+
 These recompute the quantities they check from the full system state rather
 than reusing values the components maintain, so a component that miscounts is
 still caught.

@@ -1,5 +1,10 @@
 """Margin allocator.
 
+LEGACY — superseded. Kept only because `experiments/superseded/`
+imports it. Issues per-shard leases carrying a market-state curve, both of
+which are withdrawn; see ADR-2. The current allocator is `allocator2.py`.
+
+
 Runs off the order path. Once per epoch it recomputes, for each account, the
 budget that may be distributed to shards as leases, and issues leases carrying
 (account, epoch, generation, shard).

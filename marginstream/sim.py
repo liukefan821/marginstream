@@ -1,5 +1,9 @@
 """Simulation harness.
 
+LEGACY — superseded. Harness for the withdrawn per-shard
+mechanism. Nothing current imports it.
+
+
 Drives a single account across several symbol shards. Everything is integer
 arithmetic and a seeded PRNG, so a given (seed, config) reproduces byte for
 byte. No wall-clock time is read.

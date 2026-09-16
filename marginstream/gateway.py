@@ -1,5 +1,10 @@
 """Ingress admission gateway.
 
+LEGACY — superseded. Kept only because `experiments/superseded/`
+imports it. Two resources rather than three, and no ordering point; the
+current gateway is `gateway2.py`.
+
+
 Holds a lease per account and admits orders locally. The lease carries two
 resources, because one does not bound the other:
 

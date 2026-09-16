@@ -1,3 +1,25 @@
+> **Status: historical. Every finding below was addressed; none is open.**
+>
+> This is an external hostile review of the draft as it stood on 2026-08-30,
+> kept because the AI-disclosure appendix has to show what was rejected and not
+> only what was adopted. It describes a mechanism the design has since left, and
+> its verdict does not apply to the current code or to `paper/`. Where each
+> finding went:
+>
+> | | Finding | Resolution |
+> |---|---|---|
+> | F1 | the factor-of-two theorem is false for the admission charge used | Admission now compares **absolute** worst-fill envelopes, not the increment. The counterexample is `tests/test_counterexamples.py` c1; the corrected closure, with the execution-cost term and a tightness argument, is `paper/02` §2.4 |
+> | F2 | a decreasing schedule cannot cap capacity already spent | Accepted in full. The schedule is withdrawn as a safety mechanism and survives only as a local trigger (ADR-2, `paper/A_decision_history.md`) |
+> | F3 | capacity is reusable across terms while the risk it authorised survives | Authority and committed exposure are now tracked separately; only a terminal reconciliation or an account-wide barrier lowers the second (c8, c11, c12; `paper/05` §5.4) |
+> | F4 | the central add-on reserve underestimates reachable portfolios | A second envelope bounds reachable gross, and it is measured at the highest mark the scenario grid reaches rather than at the issuance mark (`tests/test_repricing.py` m1; ADR-3) |
+> | F5 | the distributed authority is not what the simulator implements, and the fencing repair is incomplete | The simulator now implements the ordering point, fencing, seals and the settlement barrier, and a later review found the remaining hole — a lease id was a bearer token — closed in `tests/test_authority.py` |
+> | F6 | E4 and E5 use retroactive P&L and loss-erasing liquidation | The account ledger was rewritten around an exact cash-flow identity (`tests/test_account.py` a12, a13), and the liquidation path is E6/E7 with its equity change decomposed as an integer identity |
+>
+> `REPRODUCE.md` records the rounds in which each was fixed, including the runs
+> that failed on the way.
+
+---
+
 # Hostile review — MarginStream capstone whitepaper
 
 ## Verdict
