@@ -68,7 +68,7 @@ capacity.
 
 ## 8.4 What operations cannot do
 
-- **Grant capacity by hand.** It comes from the condition of §2.4 or not at all.
+- **Grant capacity by hand.** It comes from the condition of §2.2 or not at all.
 - **Recall a lease from an unreachable gateway.** Fencing stops what it can still
   do; it does not remove what it already did.
 - **Release an account's occupancy without a barrier** — not by clock, not by a

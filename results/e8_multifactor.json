@@ -1,0 +1,40 @@
+{
+  "random": {
+    "admitted": 4108,
+    "refused": 16100,
+    "fills": 4408,
+    "fills_refused": 0,
+    "cancels": 1833,
+    "reissues": 7735,
+    "violations": 0,
+    "min_headroom": 198985,
+    "max_utilisation_pct": 5,
+    "max_risk_use_pct": 29,
+    "reach_over_scenario_pct_max": 8
+  },
+  "random_small_collateral": {
+    "admitted": 3146,
+    "refused": 17072,
+    "fills": 3460,
+    "fills_refused": 0,
+    "cancels": 1434,
+    "reissues": 7739,
+    "violations": 0,
+    "min_headroom": 1506,
+    "max_utilisation_pct": 35,
+    "max_risk_use_pct": 99,
+    "reach_over_scenario_pct_max": 8
+  },
+  "control_2x_breached_trials": 6,
+  "binding": {
+    "admitted": 901,
+    "requirement": 24497,
+    "equity": 93693,
+    "worst_equity": 69196,
+    "breach": 0,
+    "risk_pct": 52,
+    "debit_pct": 100,
+    "requirement_over_equity_pct": 26,
+    "scenarios": 17
+  }
+}

@@ -16,7 +16,7 @@ produced it now lives in `experiments/superseded/`.
 | A capacity schedule contracting with a published market state makes the mechanism safe | A lease cannot remove a position it has already admitted. Capacity that shrinks restricts the *next* admission, not the exposure already created | A flat ceiling for the term. The schedule survives only as a local operational trigger, with no capacity claim (ADR-2) |
 | A state-contingent schedule recovers 3.8× the throughput of worst-case sizing | Measured on the incremental-charge mechanism, which did not bound the account's requirement at all | Utilisation is reported directly: the closure caps it near half of equity, and E1's binding trial reaches 99% of two envelopes at 49% of equity |
 | Charging an order its marginal requirement is sufficient | A leg flipped from short to long leaves the local increment unchanged while the account's requirement moves to its maximum (c1) | Admission compares absolute worst-fill envelopes |
-| Gross notional is additive across the partition | Two gateways can hold opposite legs in the same symbol; they net inside the account | Gross is sub-additive by the triangle inequality, and the add-on is evaluated once on the summed gross (§2.3) |
+| Gross notional is additive across the partition | Two gateways can hold opposite legs in the same symbol; they net inside the account | Gross is sub-additive by the triangle inequality, and the add-on is evaluated once on the summed gross (Appendix D.1) |
 | Expiry releases the exposure a holder created | A term ends authority. The positions stay | Authority and committed exposure are tracked separately; only a terminal reconciliation or an account barrier lowers the second (§5.4) |
 | A gateway may keep accepting risk-reducing orders during a partition | An order that lowers one gateway's requirement can raise the account's by removing a hedge held elsewhere (c9) | A gateway in quarantine admits nothing. Risk reduction is an account-level operation (§3.3) |
 | A compromised gateway's blast radius is bounded by its leases | Nothing downstream re-derives the envelopes the gateway compared against | The gateway is inside the trusted computing base, and §6.1 says what it can and cannot do |
@@ -76,8 +76,7 @@ exposure to 5 ticks and costs 9 admissions under attack.
 residual belongs to the mark pipeline, not to the lease: multiple independent
 sources, a trimmed statistic across them, staleness detection on each source,
 and a bound on how far the published state may lag the sources. That pipeline is
-named in §2 and not designed in this document, which is a scope decision rather
-than an oversight.
+now designed in §2.5; this record is kept as the argument that led to it.
 
 ## A.3 The counterexample ledger
 

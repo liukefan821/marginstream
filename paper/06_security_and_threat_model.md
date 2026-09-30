@@ -57,7 +57,7 @@ at the ordering point like any other's, and the barrier refuses to run while it
 is live (t5, l11): containment of duration, not of authority.
 
 **The market-data path** carries no authority in the running case. Here marks set
-equity, the scenario displacements and `G+`, so a wrong value changes how much
+equity, the scenario displacements and $G^{+}$, so a wrong value changes how much
 capacity is solved for — weaker than an earlier draft claimed, since the
 admission check reads no market state, but it is the exposure in §6.3 A1.
 
@@ -78,7 +78,7 @@ within the term. Releasing first is not available.
 
 ### A1 — Overstating equity
 
-Every ceiling is solved against `E_0`, and nothing downstream re-derives it. An
+Every ceiling is solved against $E_0$, and nothing downstream re-derives it. An
 account reporting more equity than it has buys a ceiling it cannot carry.
 
 E5 measures it. An account that forgets a realised loss reports 92,000 where it
@@ -91,59 +91,35 @@ cannot move until the overstatement buys a whole lot of requirement.
 an earlier draft that read it as a 64% tolerance was reading unused workload
 slack.
 
-The exposure is to anything that moves `E_0`: a suppressed mark, a lost fee, a
+The exposure is to anything that moves $E_0$: a suppressed mark, a lost fee, a
 realised loss not yet folded in. The defences are §4.3's cash-flow identity, the
 account being an independently rebuildable fold of the log, and multi-sourced
 marks. None is a proof; a compromised equity path is a compromised mechanism.
 
 ### A2 — Routing to concentrate an account's flow
 
-A gateway prices nothing globally: it compares absolute figures against its own
-ceilings and gets no credit for offsets held elsewhere, so the account is charged
-the sub-additivity gap of §2.3. Concentrating onto fewer gateways the positions
-that *offset each other*, or whose losses peak in *different* scenarios, shrinks
-that gap and buys real capacity — not by concentrating market risk, but by making
-the decomposition less conservative.
-
-This is a **capacity-fairness** problem, not a solvency one: the requirement is
-still bounded, but a client who can influence routing — by picking a gateway, or
-retrying until it lands where it wants — gets more usable capacity than one who
-cannot.
-
-Mitigations, none implemented: account affinity and controlled failover keep
-offsetting legs together and so shrink the gap; usage-aware weights do not shrink
-it at all, they only reduce stranded capacity on gateways an account is not
-using.
+A gateway gets no credit for offsets held on other gateways, so a client who can
+steer hedged legs onto one gateway — by picking it, or retrying until it lands
+there — gets more usable capacity than one who cannot. A **fairness** problem,
+not a solvency one: the requirement stays bounded. Account affinity would narrow
+it; not built.
 
 ### A3 — Stalling a liquidation
 
-Leaving orders the matching side never acknowledges cancels for keeps the account
-in the fenced state indefinitely: the settlement reserves for them rather than
-releasing them (l13), so the capacity stays occupied. The venue's exposure is
-bounded — the reservation is exactly the worst-fill figure — but the account
-cannot be closed out and re-opened. Detection is §8.2's fenced-but-not-settled
-alert; there is no mitigation in the design. Fee-cap gaming through many small
-fills is the fourth case and is bounded by the per-lot cap the ordering point
-enforces (d4).
+Orders whose cancels the matching side never acknowledges keep the account
+fenced indefinitely: the settlement reserves for them (l13). The venue's exposure
+is bounded by that reservation, but the account cannot be closed out. Detection
+is §8.2's fenced-but-not-settled alert; there is no mitigation. Fee-cap gaming
+through many small fills is bounded by the per-lot cap (d4).
 
 ## 6.4 Regulatory posture
 
-What this design offers a supervisor is **reproducibility of what was admitted**:
-every admitted order is on the ordering point's log with the lease, the holder
-and the terms it was held to, and the values the decision was derived from are
-versioned on that log (§4.1), so an admission from three months ago can be
-recomputed rather than described.
-
-It does not yet offer the same for a **refusal**. A gateway that refuses an order
-on its own envelope arithmetic sends nothing to the ordering point, so there is
-no record to replay. NFR row 10 is written as a target for that reason, and the
-gateway refusal journal that would close it is designed and not built.
-
-What it does not offer is a guarantee that clients can always exit. The venue can
-act on an account it can no longer margin (§5.4), but a client whose gateway's
-term has ended cannot close through it and there is no client-facing close-only
-path (§3.3). A supervisor asking whether clients can always exit should be told
-no; §7 records that the wider claim was considered and not built.
+A supervisor gets **reproducibility of what was admitted**: every admission is on
+the log with its lease, holder and terms, and the values it was derived from are
+versioned there (§4.1), so a three-month-old decision can be recomputed. Not yet
+for a **refusal**: a gateway's refusal reaches no log (NFR row 10). And not a
+guarantee that clients can always exit (§3.3) — a supervisor asking should be
+told no.
 
 ## 6.5 Detection
 

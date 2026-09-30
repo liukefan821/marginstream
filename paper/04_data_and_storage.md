@@ -22,12 +22,15 @@ Double-entry, with conservation enforced at write time: every journal entry's
 postings sum to zero per asset, so value is moved by code and never created.
 Accounts are keyed `(ownerId, assetId, accountType)` over `USER_AVAILABLE`,
 `USER_MARGIN_HOLD`, `USER_UNREALISED`, `EXCHANGE_FEE`, `INSURANCE_FUND`,
-`EXCHANGE_HOT`, `EXCHANGE_COLD`, `SUSPENSE` and `EXTERNAL_SETTLEMENT`.
+`EXCHANGE_HOT`, `EXCHANGE_COLD`, `SUSPENSE`, `EXTERNAL_SETTLEMENT`, `VENUE_BOOK` and
+`FUNDING_CLEARING`.
 `USER_MARGIN_HOLD` is the running case's `USER_HOLD` under cross-margin: there
 the hold is per order and released when that order resolves, here it is the
 account's single encumbrance and moves with the portfolio requirement.
-`USER_UNREALISED`, `INSURANCE_FUND` and `EXTERNAL_SETTLEMENT` have no
-counterpart in a spot venue.
+Everything from `USER_UNREALISED` onward except the wallets and `SUSPENSE` is new
+relative to a spot venue: a derivatives venue carries positions it marks every
+tick, pays funding between clients, takes positions onto its own book in a
+liquidation, and keeps a fund to absorb what an account cannot.
 
 Signs follow each account's normal balance — user and asset accounts debit, venue
 liabilities credit — and an entry's postings sum to zero once signs are applied.
@@ -58,24 +61,30 @@ are not commensurable and do not compose into a ledger amount.
 What does hold is three facts that meet at the account: every posting sums to
 zero per asset, enforced at write time; an account's equity is a cash-flow fold of
 the authoritative log, rebuildable independently of any live component (a14); and
-the admission theorem of §2.4 keeps the requirement inside *that* equity after any
+the admission condition of §2.2 keeps the requirement inside *that* equity after any
 move the grid covers.
 
 They do not compose into a proof that venue assets exceed liabilities: that needs
-the ledger implemented, the insurance fund sized, and moves outside the grid
-accounted for.
+the ledger implemented, the insurance fund sized against moves outside the grid
+(§5.4 argues a size from one stress run; it is not a calibration), and the venue
+book's own risk bounded.
 
 ## 4.4 The order lifecycle as journal entries
 
 | Event | Postings |
 |---|---|
-| Order admitted | None. Admission consumes envelope, which is not money |
-| Position opened by a fill | `USER_AVAILABLE -x` / `USER_MARGIN_HOLD +x`; fee to `EXCHANGE_FEE` |
-| Mark-to-market | `USER_UNREALISED` against the counterparty; sums to zero across both plus fee |
-| Position reduced | `USER_MARGIN_HOLD -x` / `USER_AVAILABLE +x` |
-| Liquidation basket | As a reduction; the counterparty is the venue (§5.4), and a shortfall draws `INSURANCE_FUND` |
+| Order admitted | None. Admission consumes a budget, which is not money |
+| Position opened by a fill | `USER_AVAILABLE -x` / `USER_MARGIN_HOLD +x`; fee `USER_AVAILABLE -f` / `EXCHANGE_FEE +f` |
+| Mark-to-market (unrealised PnL) | `USER_UNREALISED ±u` against the counterparty's `USER_UNREALISED ∓u`; the two sides sum to zero |
+| Position reduced (realised PnL) | the matching `USER_UNREALISED` is moved into `USER_AVAILABLE`; `USER_MARGIN_HOLD -x` / `USER_AVAILABLE +x` for the released margin |
+| Funding, each interval | payers `USER_AVAILABLE -p` / `FUNDING_CLEARING +p`; receivers `FUNDING_CLEARING -p` / `USER_AVAILABLE +p`; the clearing account is zero after every interval, so the venue is not a party |
+| Liquidation basket | the position moves to `VENUE_BOOK` at the basket price, one entry per basket; a negative ending equity is covered `INSURANCE_FUND -d` / `USER_AVAILABLE +d`, bringing the account to zero |
+| ADL | when the fund would fall below its floor, the uncovered amount is taken from opposing profitable positions: their `USER_UNREALISED` is realised at the bankruptcy price and the difference posted to the defaulted account, one entry per event |
 | Withdrawal requested | `USER_AVAILABLE -x` / `SUSPENSE +x`, after the sequence in §6.2 |
 | Withdrawal confirmed | `SUSPENSE -x` / `EXTERNAL_SETTLEMENT +x`, and `EXTERNAL_SETTLEMENT -x` / `EXCHANGE_HOT -x` when the chain confirms |
+
+The funding interval, the rate formula and the ADL ranking are venue policy and
+are not specified here.
 
 The first row is the one that matters: admission moves nothing, which is what
 lets it run at gateway speed, and why the envelope bound has to be sound — it is

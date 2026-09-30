@@ -14,6 +14,8 @@ anything a previous extraction left on disk.
 | E5 | `experiments/e5_flawed_equity_negative.py` | `results/e5_flawed_equity.json` |
 | E6 | `experiments/e6_liquidation_delay.py` | `results/e6_liquidation_delay.json` |
 | E7 | `experiments/e7_operational_faults.py` | `results/e7_operational_faults.json` |
+| E8 | `experiments/e8_multifactor.py` | `results/e8_multifactor.json` |
+| E9 | `experiments/e9_flash_crash.py` | `results/e9_flash_crash.json` |
 
 Eleven test files, all in `tests/`, all exiting 0. `results/PROVENANCE.md` gives
 the machine, OS, Python version, date and commit for the current result files;
@@ -1504,3 +1506,63 @@ its own term; a Byzantine one only by the fence. ADR-6 records that as the cost.
 `e3_hot_path_benchmark.py` deliberately builds its allocator without a sequencer:
 it measures the gateway's local envelope arithmetic, which is the part on the hot
 path, and wiring an ordering point into it would measure something else.
+
+
+## Round of 2026-09-30: instructor's obligations after approval
+
+The instructor approved MarginStream as candidate 3 with a harder core and asked
+for a run on a multi-factor, mixed-sign scenario set and for the Session 3 flash
+crash as a test vector. Both are new experiments; no existing code changed.
+`marginstream/scenarios.py` adds a risk model whose scenario set is an explicit
+table, overriding the four methods through which everything downstream reads
+the scenario set.
+
+### E8, a two-factor mixed-sign scenario set
+
+    $ python3 experiments/e8_multifactor.py
+    scenario set: 17 scenarios (3x3 joint moves of two factors, plus 8 idiosyncratic), 4 symbols, loading sign patterns [(False, True), (True, False), (True, True)]
+    wide collateral (as E1): trials 300, steps per trial 160
+      actions: admitted=4108, refused=16100, fills=4408, fills_refused=0, cancels=1833, reissues=7735
+      peak risk-envelope use 29%, peak requirement as a share of equity 5%, min headroom 198985, violations 0
+      gross reserved above the largest single-scenario gross, worst final position: 8%
+    small collateral, envelopes near the ceiling: trials 300, steps per trial 160
+      actions: admitted=3146, refused=17072, fills=3460, fills_refused=0, cancels=1434, reissues=7739
+      peak risk-envelope use 99%, peak requirement as a share of equity 35%, min headroom 1506, violations 0
+      gross reserved above the largest single-scenario gross, worst final position: 8%
+    control, ceilings solved against 2x equity: trials with a breach 6 of 300
+
+    binding trial, hedged pair filled at the worst price and fee
+      admitted 901, requirement 24497, equity 93693, worst-scenario equity 69196, breach 0
+      envelope use: risk 52%, debit 100%; requirement is 26% of equity
+
+The wide-collateral series never comes near a budget (peak requirement 5% of
+equity), so its zero says little on its own; the small-collateral series drives
+the risk budget to 99% and is the one that carries the claim. The control shows
+the oracle does report breaches on this scenario set when the factor of two is
+removed.
+
+### E9, a flash crash through the waterfall
+
+    $ python3 experiments/e9_flash_crash.py
+    breaker at 0.50 of a grid step; detection delay 1 tick; unwind half the position per tick
+    insurance fund 100000, floor 20000; five long accounts, collateral [60000, 90000, 150000, 250000, 400000]
+
+     shape        arm   reopen liquidated     draw venue lots  fund left     ADL  fund for no ADL
+       gap    breaker  recover          0        0          0     100000       0            20000
+       gap    breaker   at_low          5   214848       1680      20000  134848           234848
+       gap no_breaker        -          5   214848       1680      20000  134848           234848
+     slide    breaker  recover          0        0          0     100000       0            20000
+     slide    breaker   at_low          5   214856       1680      20000  134856           234856
+     slide no_breaker        -          5        0       1680     100000       0            20000
+
+    draw: loss beyond the accounts' own equity, summed. fund left: after the draw, never below the floor.
+    ADL: what the fund could not cover above its floor, to be allocated to opposing positions.
+
+    the E6 identity holds in every liquidated account
+
+Session 3's tabletop gave the shape of the crash, not its magnitudes; the
+magnitudes, the fund and the floor above are chosen here. E9 does not model
+market-data conflation, reconnect storms or gateway overload.
+
+Tests after this round: all eleven files exit 0. E1–E7 were not re-run and their
+result files are unchanged.

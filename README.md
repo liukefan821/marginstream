@@ -43,7 +43,7 @@ code, so the naming is documented rather than fixed.
 
 ## Running it
 
-Eleven test files and seven experiments. **Run exactly these**; do not use a
+Eleven test files and nine experiments. **Run exactly these**; do not use a
 glob, because a glob picks up anything left on disk by an earlier extraction.
 
     python3 --version    # 3.12.3 produced results/; see results/PROVENANCE.md
@@ -63,11 +63,13 @@ glob, because a glob picks up anything left on disk by an earlier extraction.
              experiments/e4_recovery.py \
              experiments/e5_flawed_equity_negative.py \
              experiments/e6_liquidation_delay.py \
-             experiments/e7_operational_faults.py; do
+             experiments/e7_operational_faults.py \
+             experiments/e8_multifactor.py \
+             experiments/e9_flash_crash.py; do
       echo "### $e"; python3 "$e"; echo "exit=$?"
     done
 
-Every file exits 0. Running the experiments rewrites `results/`; six of the seven
+Every file exits 0. Running the experiments rewrites `results/`; eight of the nine
 files are byte-identical on any machine because the simulator is integer-only and
 seeded, and `results/e3_hot_path.json` is wall-clock timing and will differ.
 Restore it with `git checkout -- results/` if you did not intend to re-record.
@@ -80,7 +82,7 @@ No dependencies beyond the standard library.
 |---|---|
 | `test_algebra` | the two algebraic properties the decomposition rests on |
 | `test_counterexamples` | 16 lifecycle counterexamples, c1–c16 |
-| `test_worst_fill`, `test_worst_fill_exhaustive` | envelopes over order state; closed form against enumeration of all 2ⁿ fill subsets |
+| `test_worst_fill`, `test_worst_fill_exhaustive` | envelopes over order state; closed form against enumeration of every fill subset |
 | `test_repricing` | where gross is measured, and the scope of the tightness claim |
 | `test_authority` | the ordering point's lease binding, including the cross-account attack an external review demonstrated |
 | `test_execution_debit` | price band, fee cap, fill identity and the cross-generation debit baseline |
@@ -90,6 +92,8 @@ No dependencies beyond the standard library.
 | E3 | incremental admission against a full scan computing identical envelopes |
 | E4 | 3,642 injected crashes; snapshot plus replay against a rebuild from the whole log |
 | E6, E7 | liquidation delay decomposed exactly, and eleven faults injected into that path |
+| E8 | E1's oracle on a two-factor, mixed-sign scenario set, with a control that drops the factor of two |
+| E9 | a flash crash (gap and slide) through the breaker, the liquidation path, the insurance fund and ADL |
 
 ## Determinism
 

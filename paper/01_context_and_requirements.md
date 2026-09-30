@@ -41,24 +41,32 @@ into a second authority: a margin allocator that runs off the order path and
 hands **each ingress gateway** a locally checkable share of the account's
 capacity. Matching shards hold no lease and make no margin decision.
 
-**Where this sits relative to the nearest candidate system.** A real-time risk
-and liquidation engine for a margin venue is one of the five offered, and its
-hard parts are after the event: pricing the mark, ordering the waterfall, sizing
-the fund. Those are named out of scope here (§5.7) and this document does not
-claim them. The hard part taken instead is before the event, and it is a
-different one: a globally non-additive invariant enforced pre-trade over books
-that are sharded by symbol and written concurrently. A risk engine does not meet
-it because it assumes the account-level check has already been serialised
-somewhere; this design is about what happens when it cannot be.
+**Where this sits relative to the nearest candidate system.** MarginStream is
+candidate 3 — a real-time risk and liquidation engine for a margin venue — with
+a harder core. Candidate 3 assumes the account-level check has already been
+serialised somewhere; here it cannot be, because the books it depends on are
+sharded by symbol and written concurrently. Candidate 3's obligations still
+apply and are met here: the mark-price pipeline (§2.5), the liquidation
+waterfall from unwind through the venue book and insurance fund to ADL (§5.4),
+and a flash crash run as a test vector (E9, §5.4).
 
 ## 1.3 Scope
 
-In scope: the margin authority, the admission path, the degradation ladder, the
-liquidation and settlement path, and the audit trail for admission decisions.
+Designed here: the venue's requirements, the margin authority and admission
+path, the consistency map, the derivatives accounting model, the degradation
+ladder, recovery, the liquidation waterfall, the threat model, operations and
+the target deployment. Out of scope: order routing, market making, fiat rails,
+wallet infrastructure.
 
-Taken as given from the running case and cited rather than re-derived: the
-matching engine, the replicated log, determinism, and double-entry accounting.
-Out of scope: order routing, market making, fiat rails, wallet infrastructure.
+Four things are taken from the running case and cited rather than re-derived.
+What matters is where each sits and what the margin authority does to it:
+
+| Cited from the running case | Where it sits here (Figure 1) | How the margin authority interacts with it |
+|---|---|---|
+| Matching engine, single writer per symbol (Part 2 §3) | behind the ordering point, eight shards | none on the order path: a shard holds no lease and makes no margin decision. Liquidation does not use it; baskets are internal transfers (§5.4) |
+| Replicated log (Part 4 §3) | the ordering point's log | the allocator writes lease inputs to it and reads occupancy from it; gateways derive their budgets from it; fences, seals and barriers are records on it |
+| Determinism | every component's state is a fold of the log | budgets are derived deterministically from logged inputs, so they are not logged themselves (ADR-4); all arithmetic is integer |
+| Double-entry ledger (Part 3 §1) | downstream of fills and baskets | a lease never appears in it; `USER_MARGIN_HOLD` replaces per-order `USER_HOLD`; funding, the insurance fund and ADL are new postings (§4.4) |
 
 ## 1.4 Non-functional requirements
 
@@ -67,14 +75,14 @@ Out of scope: order routing, market making, fiat rails, wallet infrastructure.
 | 1 | Order throughput | 100k/s sustained, 1M/s burst | Admission is a local array operation; no allocator call on the order path |
 | 2 | Admission-path latency | p50 < 20 µs, p99 < 200 µs, above matching | Per-account per-gateway scenario vector kept resident. Argued, not measured: E3 supports the scaling, not the target |
 | 3 | Matching latency | p50 < 100 µs, p99 < 1 ms in-engine | Unchanged; single writer per symbol |
-| 4 | Margin correctness | Requirement never exceeds equity after any move the scenario grid covers | The closure of §2.4, with the factor of two shown tight |
+| 4 | Margin correctness | Requirement never exceeds equity after any move the scenario grid covers | The closure of §2.2, with the factor of two shown tight |
 | 5 | Tightening latency | Binds within the lease term under partition, immediately when the ordering point is reachable | Fence at the ordering point; §1.5 |
 | 6 | Allocator cadence | Issuance every 50–200 ms | §1.5, §1.6 |
 | 7 | Allocator throughput | ≈ 3 × 10⁷ scenario operations per issuance | Sharded by account; grid evaluated as a vector |
 | 8 | Availability | 99.99% for order entry; failover < 3 s | Replicated log, as in the running case |
 | 9 | Degradation | The venue can bound its own loss in every state above HALT. Client-initiated risk reduction is **not** preserved under partition | Venue-initiated liquidation (§5.4); §3.3 states what is given up |
 | 10 | Auditability | **Target:** every admission *and refusal* replayable with the figures it compared. **Today:** admissions only. A refusal never reaches the ordering point, and §2.6's gateway refusal journal is not built |
-| 11 | Solvency | **Target:** Σ user liabilities ≤ Σ venue assets, continuously checkable. **Today:** three facts about one account (§4.3). The ledger is unimplemented and the fund unsized, so the venue-level claim is an argument |
+| 11 | Solvency | **Target:** Σ user liabilities ≤ Σ venue assets, continuously checkable. **Today:** three facts about one account (§4.3). The ledger is unimplemented and the fund's size is argued from one stress run (§5.4), so the venue-level claim is an argument |
 
 Rows 1, 3 and 8 are inherited; 2, 6 and 7 derived in §1.5–1.7; 4, 5 and 9
 established in §2, §3 and §5. Rows 10 and 11 are targets, marked as such; §9.4
@@ -82,39 +90,24 @@ lists everything designed and not built.
 
 ## 1.5 What sets the lease term
 
-A lease is a fixed ceiling a gateway may spend for the length of its term. The
-term is the mechanism's principal operational trade-off parameter — the scenario
-grid, the add-on parameters, the price bands, the fee caps and the gateway
-weights are all chosen too — and it is the one bounded from both sides at once.
+The term is the main operational trade-off, and it is bounded from both sides.
+**Recompute cost is the floor:** ≈ 3 × 10⁷ operations per issuance (§1.6) is
+ordinary at a 100 ms cadence and not at 1 ms. **Tightening latency is the
+ceiling:** a gateway nobody can reach keeps spending its budget until the term
+ends.
 
-**Recompute cost is the floor.** §1.6 works out ≈ 3 × 10⁷ operations per issuance
-for the whole book, which is an ordinary workload at a 100 ms cadence and is not
-one at 1 ms.
+> The lease term is the worst-case delay before a credit cut binds on a gateway
+> the allocator cannot reach.
 
-**Tightening latency is the ceiling.** A gateway that cannot be reached keeps
-admitting inside its ceiling until the term ends, and no allocator message
-changes that — which is what the term is for.
-
-> The lease term is the worst-case enforcement latency of a **tightening**
-> decision **under partition**.
-
-Raising a limit takes effect at the next issuance, and so does lowering one when
-the allocator can reach the gateways; the term bounds only the unreachable case,
-where it bounds everything — collateral cut, downgrade, withdrawal. 50–200 ms is
-a **design target chosen against an assumed tightening SLO**, not a figure derived
-from any supervisory deadline.
-
-One path does not wait: fencing the lease at the ordering point (§2.5), which is
-immediate and needs no gateway to be reachable. The term bounds *routine*
-tightening, where fencing every affected lease is a heavy instrument.
-
-An earlier version issued capacity as a schedule contracting with a published
-market state. It is withdrawn: see ADR-2 and Appendix A.
+Raising or lowering a limit on a reachable gateway takes effect at the next
+issuance; a fence at the ordering point (§2.4) binds immediately on any gateway,
+reachable or not, and is kept for the heavy cases. 50–200 ms is a design target
+against an assumed tightening SLO, not a regulatory figure.
 
 ## 1.6 What the allocator has to compute, and how often
 
 Per account per issuance: one evaluation of the scenario term at |S| × contracts
-≈ 16 × 5 ≈ 80 multiply-adds, one feasibility check of §2.4's condition at the same
+≈ 16 × 5 ≈ 80 multiply-adds, one feasibility check of §2.2's condition at the same
 order, and a bisection for the scale over 10⁹ minor units at ≈ 30 iterations —
 ≈ 3 × 10³ operations in all. At 10⁴ accounts changed per issuance that is
 **≈ 3 × 10⁷ per issuance** and, at a 100 ms cadence, **≈ 3 × 10⁸ per second**.
@@ -141,21 +134,6 @@ from 50 to 500, changed the incremental median by 1.1%, while the full scan over
 the same range grew 6.7×; widening the grid from 7 scenarios to 16 raised the
 incremental median by 34%. That is O(|S|) against O(orders × |S|).
 
-**The absolute figures are deliberately not quoted here.** They are wall-clock
-nanoseconds from CPython on a shared machine, they differ by a third between the
-hosts this has run on, and they are three orders of magnitude from what a
-compiled implementation would need. Only the ratios above are evidence, and they
-support the scaling claim rather than row 2's latency target, which remains
-argued. `results/PROVENANCE.md` records the machine, and `REPRODUCE.md` lists
-other hosts under the host that produced them.
-
-## 1.8 What these numbers commit us to
-
-- Three ceilings per gateway per account, checked against absolute figures rather
-  than increments, because an incremental charge does not bound the account's
-  requirement (§2.4).
-- An allocator partitioned by account, ≈ 16 shards at this scale.
-- A lease term chosen from recompute cost below and tightening latency above,
-  with fencing at the ordering point as the path that does not wait for it.
-
-Each is revisited in §7 with the alternative that lost.
+Absolute timings are not quoted: they are CPython wall-clock figures, three
+orders of magnitude from a compiled implementation. The ratios support the
+scaling claim; NFR row 2's target remains argued.

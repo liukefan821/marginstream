@@ -14,7 +14,7 @@ One row per flow, with the model chosen and why it is survivable. The test is
 | Fill terms | Checked at the ordering point against terms recorded at admission | A fill reported by a component that could be compromised is not evidence. Band, fee cap, direction, over-fill and identity are decided there; a refused fill writes nothing |
 | Lease issuance and generation | Single allocator per account, linearisable | Two issuers could double-issue against the same equity. The one place the design cannot weaken |
 | End of authority | Fence at the ordering point, linearisable | A clock comparison is not evidence a partitioned holder has stopped; a fence is. It need not be delivered to the holder |
-| Marks into the allocator | Bounded-stale | Staleness costs capacity in both directions and, inside the grid, not safety — for two reasons that are both needed: the add-on is reserved against `G+`, the highest gross the grid reaches, and `R` already covers the equity the account loses at any scenario in it |
+| Marks into the allocator | Bounded-stale | Staleness costs capacity in both directions and, inside the grid, not safety — for two reasons that are both needed: the add-on is reserved against $G^{+}$, the highest gross the grid reaches, and `R` already covers the equity the account loses at any scenario in it |
 | Position feed into the allocator | Bounded-stale, eventually consistent | A fill the allocator has not seen was admitted under a lease and is inside that lease's absolute ceilings. Until a terminal ordered reconciliation it stays charged to that holder |
 | Holder occupancy | Over-approximated per holder while any is live; compacted from the log once none is | Per-holder figures are summed and do not net, which is necessary while an unreachable holder may still be acting (§5.4) |
 | Audit journal | Durable append-only, linearisable per shard | Replay must reproduce the decision exactly, which fails if entries reorder |
@@ -42,27 +42,17 @@ cannot reach a book at all and is not serving in any sense.
 > ceilings it already holds until its term ends, and then admits nothing. It does
 > not fall back on a local judgement that an order reduces risk.
 
-An earlier version of this document said gateways keep accepting risk-reducing
-orders. That is withdrawn: c9 is an order that lowers one gateway's requirement
-and raises the account's, by closing a leg whose hedge is held elsewhere. A
-gateway does not have the account's portfolio and cannot tell the two apart.
+It cannot tell a risk-reducing order from one that closes a leg whose hedge sits
+on another gateway (c9), so it does not try.
 
-Three consequences.
-
-**Availability is bought before the partition, not during it.** The gateway
-serves because it was handed a ceiling solved to be safe on its own; when the
-term ends, availability ends. The term length *is* the availability budget, and
-it is the same number as the tightening latency of §1.5.
-
-**When the term ends, all client order flow through that gateway stops, closing
-orders included.** The liquidator is venue-initiated machinery, not a
-client-facing close-only API. What the design preserves under partition is **the
-venue's ability to bound its own loss**, not the client's ability to exit.
-
-**A client-facing reduce-only path is possible and not built.** It needs the same
-account-level check the liquidator performs, so a central component the gateway
-can reach — and if that is reachable, the account is not partitioned in the way
-that matters.
+**Availability is bought before the partition.** The gateway serves because its
+budget was solved to be safe on its own; the term length *is* the availability
+budget, and the same number as the tightening latency of §1.5. **When the term
+ends, all order flow through that gateway stops, closing orders included.** What
+survives a partition is the venue's ability to bound its own loss, through the
+liquidator — not the client's ability to exit. A client-facing reduce-only path
+would need the account-level check the liquidator makes, so a central component
+the gateway can reach; it is not built.
 
 ## 3.4 Where the design refuses to weaken
 

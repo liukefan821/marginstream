@@ -36,7 +36,7 @@ disk was passing on an empty sample.
    leading risk. It is not: tiers are per contract and additive. What actually
    breaks decomposition is the portfolio-level add-on, which is super-additive.
 2. **Abstracting the requirement into a general coherent-risk-measure
-   formulation.** Rejected: §2.3 rests on exchanging a maximum with a sum, and
+   formulation.** Rejected: Appendix D.1 rests on exchanging a maximum with a sum, and
    burying that step inside a general functional makes the paper harder to
    defend, not stronger.
 3. **Charging an order its marginal requirement.** A leg flipped from short to
@@ -55,10 +55,16 @@ disk was passing on an empty sample.
    tracks the overstatement one for one (E5 Part B).
 8. **Expiry releasing exposure**, and **a holder's own report releasing it.**
    Both replaced by seals and the account barrier (c8, c11, c12).
+9. **That a circuit breaker always reduces the draw on the insurance fund.** E9
+   falsified it: against a slide, a breaker that reopens at the low turns a draw
+   of 0 into 214,856, because the halt stops the liquidator too (§5.4).
+10. **Keeping the algebra in the body.** After the mid-point check-in the body was
+    rewritten around decisions, costs and risks, and the lemmas and the closure
+    proof moved to Appendix D.
 
 ## 9.4 What the numbers are, and are not
 
-- **Current evidence:** E1–E7 and eleven test files — 16 lifecycle
+- **Current evidence:** E1–E9 and eleven test files — 16 lifecycle
   counterexamples, 6 worst-fill cases plus an exhaustive closed-form comparison
   over 4,000 books, 6 recovery, 14 liquidation, 6 repricing, 6 authority, 7
   execution-cost and 14 ledger cases, and a fuzz over 10,060 admissions.
@@ -68,31 +74,30 @@ disk was passing on an empty sample.
   about the account, not venue-level solvency.
 - The replay rate of §5.5 is assumed, not measured (§8.1).
 - §6.3 A3 is argued, not measured.
-- Replication and allocator failover are designed and not built (Figure 5).
+- Replication, allocator failover (§5.5), the mark-price pipeline (§2.5) and the
+  waterfall below the unwind (§5.4) are designed and not built.
+- E8 covers one two-factor scenario set; it supports "the mechanism holds for a
+  richer finite set", not the adequacy of any set. E9's magnitudes are ours, not
+  Session 3's, and its fund figure is one configuration, not a sizing rule.
 - Superseded results — E4's schedule comparison, E5's suppression sweep — are in
   `experiments/superseded/` and are cited nowhere as current.
 
 ## 9.5 Section ownership
 
-**TODO — to be filled in before submission; these must not reach the PDF.** Every
-member presents their own sections and the panel may ask any member any question,
-so the split has to be one the group has rehearsed, not one assigned on paper.
+Each member owns the sections below: presents them at the defence and answers
+for them. The panel may ask any member any question, and all four are prepared
+to explain the admission condition of §2.2, including where the factor of two
+comes from.
 
 | § | Section | Owner |
 |---|---|---|
-| 1 | Business context and requirements | TODO |
-| 2 | Architecture | TODO |
-| 3 | Consistency map | TODO |
-| 4 | Data and storage design | TODO |
-| 5 | Failure and recovery | TODO |
-| 6 | Security and threat model | TODO |
-| 7 | Trade-offs and alternatives | TODO |
-| 8 | Operations | TODO |
-| 9 | This appendix, and appendices A–C | TODO |
-
-| Module | Owner |
-|---|---|
-| Risk decomposition, allocator, envelope solve | TODO |
-| Ordering point, authority binding, fencing and seals | TODO |
-| Gateway, worst-fill envelopes, recovery | TODO |
-| Ledger, liquidation, settlement barrier, evaluation harness | TODO |
+| 1 | Business context and requirements | Zhou Congxiang |
+| 2 | Architecture | Liu Kefan |
+| 3 | Consistency map | Zhou Congxiang |
+| 4 | Data and storage design | Zhang Haoxi |
+| 5.1–5.3 | State, log, idempotency chain | Zhang Haoxi |
+| 5.4–5.7 | Liquidation, waterfall, recovery | Wu Youjhen |
+| 6 | Security and threat model | Wu Youjhen |
+| 7 | Trade-offs and alternatives | Liu Kefan |
+| 8 | Operations | Wu Youjhen |
+| 9, A, C, D | Disclosure and appendices | Liu Kefan |

@@ -12,7 +12,7 @@ locally against absolute figures.
 | Alternative | Why it lost |
 |---|---|
 | Lock the account for the check | The only *exactly* correct option — full offset, no conservatism — and it puts the running case's fee-account hot-row problem (Part 3 §4) on every order. Market-maker accounts are the hottest objects in the venue |
-| Fixed per-gateway sub-limits, no offset | Safe, trivial, and it deletes the product. The value forgone is exactly the sub-additivity gap `sum_g R(P_g) - R(P)` taken to its maximum |
+| Fixed per-gateway sub-limits, no offset | Safe, trivial, and it deletes the product. The value forgone is exactly the sub-additivity gap $\sum_g R(P_g)-R(P)$ taken to its maximum |
 | Admit optimistically, repair after | Violates the rule that a balance never goes negative. A venue proving assets ≥ liabilities at any instant cannot have a window where the proof is pending |
 
 **Cost.** A gateway gets no credit for offsets held elsewhere, so the account is
@@ -35,83 +35,69 @@ a market-state tick with no order present, that its consumption is higher than
 the venue would like. That is a trigger, not a capacity mechanism, and its value
 is unmeasured.
 
-## ADR-3 — Where gross notional is measured
+## ADR-3 — Where size is measured
 
-**Decision.** Two figures (§2.3): the requirement uses `G_k`, gross at the marks
-of the realised scenario; the reserve uses `G+`, gross at the highest mark the
-grid reaches.
-
-**Alternative — one figure at the current mark.** Unsafe. `A` is a function of
-gross, gross depends on the mark, and a lease admits for a term over which the
-mark moves.
-
-| Reserve measured at | Lots admitted | Requirement after the move | Equity after | Over by |
-|---|---|---|---|---|
-| the issuance mark, 1000 | 296 | 1,320,871 | 938,728 | 382,143 |
-| `G+`, at mark 1200 | 249 | 942,615 | 948,457 | inside by 5,842 |
-
-**Cost.** 47 lots of 296, about 16% of capacity in that configuration — the price
-of making both terms maxima over the same scenario set.
-
-**Scope.** `G+` is an upper bound on the per-scenario maximum in every case. It is *tight* only with one factor and non-negative loadings, where the gap
-is the rounding, at most one minor unit per lot (m4a). With signed loadings the
-symbols peak at different scenarios: m4b gives 24,000 against a best single
-scenario of 20,000. The bound stays safe; the tightness claim does not
-generalise.
+**Decision.** Reserve size at the highest price the scenario set reaches, not at
+today's price. **Alternative lost** on m1: 296 lots admitted, 382,143 over equity
+after the move, against 249 lots and 5,842 inside. **Cost:** about 16% of
+capacity. With one factor the reserve is tight to a minor unit per lot; with
+several factors it stays safe but is loose (m4b: 24,000 against 20,000; E8: up to
+8%).
 
 ## ADR-4 — What goes on the replicated log
 
-**Decision.** The lease inputs — scale and weights — one record per changed
-account per issuance. Each gateway derives its own three ceilings.
-
-**Alternative — log the per-gateway ceilings.** Rejected on bandwidth: 10⁴
-accounts × 5 gateways × 64 B ≈ 32 MB/s at a 100 ms cadence, against an order
-stream of ≈ 12.8 MB/s. The inputs are ≈ 8 MB/s. Two and a half times the order
-traffic to carry a derived value did not survive the arithmetic.
-
-**Rule extracted.** Log the inputs a derived value comes from, not the derived
-value, unless the derivation is not deterministic — the same argument the running
-case makes for balances being a fold of the journal.
-
-**Cost.** Everything in the derivation becomes versioned state-machine data
-(§4.1), so it cannot be tuned mid-session.
+**Decision.** The lease inputs, one record per changed account per issuance; each
+gateway derives its own budgets. **Alternative lost** on bandwidth: logging the
+budgets costs ≈ 32 MB/s against an order stream of ≈ 12.8 MB/s; the inputs are ≈
+8 MB/s. **Cost:** everything in the derivation is versioned data (§4.1) and
+cannot be tuned mid-session.
 
 ## ADR-5 — How the allocator is partitioned
 
-**Decision.** By account, sixteen shards.
-
-**Alternative — by symbol, matching the core.** Rejected: margin is an
-account-level quantity, so shards would combine partial views to produce one
-account's ceilings, reintroducing the coordination the design exists to remove.
-The two partitionings are orthogonal (§2.1).
+**Decision.** By account, sixteen shards. **Alternative lost:** by symbol, like
+matching, would need several shards to combine partial views of one account —
+the coordination the design exists to remove.
 
 ## ADR-6 — What ends a holder's authority
 
-**Decision.** A fence at the ordering point, with the lease term as the fallback
-for holders nobody is asking about, and a registry binding each lease to an
-account, a holder and an authority kind.
+**Decision.** A fence at the ordering point, with the term as the fallback, and
+each lease bound to an account, a holder and a kind.
 
 | Alternative | Why it lost |
 |---|---|
-| Compare the order's generation with the lease's | A stale gateway and a stale order agree with each other, so the gateway keeps spending a replaced allowance. Corrected to "a gateway that has seen a higher generation refuses to serve", which is necessary and not sufficient |
-| The allocator compares its clock against the expiry | A partitioned gateway's clock may be behind, so concluding the term ended concludes nothing about whether the holder stopped (c11) |
-| The holder reports that it has stopped | The interface defect that kept recurring: a correct seal paired with an optimistic usage claim was accepted until `release` computed the figure from the log itself, and the same mistake reappeared in the first account barrier |
-| Treat the lease id as the authority | It was a bearer token: any account, any claimed holder, until an external review demonstrated it (t1) |
+| Compare the order's generation with the lease's | a stale gateway and a stale order agree with each other |
+| The allocator's clock against the expiry | a partitioned gateway's clock may be behind (c11) |
+| The holder reports it has stopped | the defect that kept recurring until release read the log itself |
+| The lease id as the authority | a bearer token: any account, any holder (t1) |
 
-**Cost.** The ordering point has no clock it can compare against an expiry set
-elsewhere, so it does not enforce terms. An honest gateway is bounded by its own
-term; a Byzantine one only by the fence. §6.1 states that rather than claiming
-otherwise.
+**Cost.** The ordering point has no clock, so it does not enforce terms: an
+honest gateway is bounded by its term, a compromised one only by the fence
+(§6.1).
+
+## What the counterexamples forced
+
+Every row is a failing test written first, then a design change. Detail is in
+Appendix A; the tests are in `tests/`.
+
+| Counterexample | What broke | Design change it forced |
+|---|---|---|
+| c1 | charging an order its increment: a leg flipped from short to long left the increment unchanged while the requirement hit its maximum | gateways check absolute worst-fill figures |
+| c9 | a gateway accepting "risk-reducing" orders during a partition: closing one leg raised the account's requirement because the hedge sat on another gateway | a cut-off gateway admits nothing; only the liquidator, with the merged account, reduces risk |
+| m1 | size reserved at today's price: 296 lots, ending 382,143 over equity after the move | size reserved at the highest price in the scenario set: 249 lots, inside by 5,842 |
+| l3 | unwinding one leg at a time: requirement 0 → 2,000 | proportional basket, committed as one record, venue as counterparty |
+| c8, c11, c12 | exposure released on expiry, on a clock, or on the holder's own report | only a seal or an account-wide barrier releases exposure |
+| t1 | a valid lease id under another account returned success | the ordering point binds each lease to account, holder and kind |
+| r2 | replay de-duplicated by order id applied fills twice | replay is idempotent by log position |
+| d7 | capacity shrank every term | the cost budget carries cost already incurred but not yet in equity |
+| E5 Part B | reading the factor of two as a 64% tolerance for misreported equity | the two is a closure; at the binding point a breach tracks an overstatement one for one |
+| ADR-2 | a budget that shrinks as the market moves, claimed as a safety mechanism | a flat budget per term; the schedule survives only as a local trigger |
 
 ## What we deliberately did not build
 
-- **A liquidation waterfall.** The trigger, the fencing and the unwind are here;
-  who absorbs a shortfall is a separate document.
-- **The mark-price pipeline.** Marks set equity and every ceiling is solved
-  against equity, so we would not claim the capacity control is sound without it
-  (§6.3 A1).
+- **The waterfall, the mark-price pipeline and allocator failover** are designed
+  (§5.4, §2.5, §5.5) and not built. E9 runs the waterfall's arithmetic.
 - **A client-facing reduce-only path.** §3.3 says why, and what it costs.
-- **Replication of the ordering point, and allocator failover.** Figure 5 draws
-  the target deployment and labels it unbuilt.
+- **Replication of the ordering point.** Figure 4 draws the target deployment and
+  labels it unbuilt.
 - **Anything that identifies the agent behind an order.** The mechanism is
   capacity control, not surveillance.

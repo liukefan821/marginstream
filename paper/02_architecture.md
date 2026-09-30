@@ -23,162 +23,109 @@ positions spread across matching shards, a shard holds many accounts, and neithe
 needs the other's partition to be correct. The single-writer core is plural — one
 writer per symbol for the book, one per account for the capacity.
 
-## 2.2 Why a lease exists at all
+## 2.2 The idea in one page
 
-Admission happens at N gateways upstream of the shard, so either every order pays
-a round trip to a shared counter or capacity is divided into locally checked
-shares. **The value of a lease is upstream early shedding** — stopping a burst
-before it queues at the single-writer shard — not replacing a counter inside it.
-Collapsed to one gateway the mechanism reduces to a local counter, and we would
-say so rather than defend the complexity.
+**Why the requirement cannot be checked one book at a time.** A client long
+BTC-PERP and short ETH-PERP is hedged: the account owes less than the two legs
+would owe separately. That offset is the product. But the two legs sit on
+different matching shards, written concurrently, and an order arrives at one of
+them. No single place sees the whole account at the moment the order has to be
+accepted or refused, and "requirement ≤ equity" is a statement about the whole
+account. Checking each book on its own lets an account build more than it can
+pay for: E2's naive control reaches a requirement of 201,000 on 2,000 of
+collateral.
 
-## 2.3 What can be divided, and what cannot
+**Why not ask a central service on every order.** Admission happens at N
+gateways in front of the shards. Either every order pays a round trip to one
+shared counter per account, or each gateway is handed a share it can check
+locally. **The value of the share is upstream early shedding** — stopping a
+burst before it queues at a single-writer shard. With one gateway the design
+collapses to a local counter, and we would say so rather than defend it.
 
-Write the account's requirement as a scenario term plus an add-on. Two gross
-figures are needed and they are not the same object:
+**How the requirement is split.** The requirement has two parts.
 
-    R(P)    = max over k in S of  loss_k(P)
-    G_k(P)  = sum_s |q_s| * mark_s(k)          gross at the marks of scenario k
-    G+(P)   = sum_s |q_s| * max_j mark_s(j)    gross at the highest mark in S
-    M_k(P)  = R(P) + A(G_k(P))                 what the account owes at k
-    A       = phi, convex, non-decreasing, phi(0) = 0
+- **The scenario part** is the worst loss the account takes over a fixed set of
+  market moves. It *can* be split: the worst case of the whole account is never
+  more than the worst cases of its parts added up, because one market move
+  cannot be the worst for every part at once. So each gateway gets its own
+  risk budget and checks it locally.
+- **The concentration add-on** grows faster than size (it is convex). Pieces of
+  it add up to *less* than the whole, so splitting it would under-charge. It is
+  never split: it is reserved once, centrally, on the total size all gateways
+  together may reach.
 
-`G_k` is what the requirement is computed from; `G+` is what a lease reserves
-against, because the marks move during a term (§2.4). `G_k(P) <= G+(P)` for every
-`k` by construction. The code keeps them apart as `gross` and `gross_reach`.
+**What the closure buys.** The allocator issues budgets so that
 
-`R` is the worst loss across a fixed scenario set `S`, and the loss under any
-single scenario is linear in positions. `A` is a concentration and liquidity
-add-on.
+    2 × (risk budgets) + add-on(total size budget) + (cost budgets) ≤ equity
 
-**Model boundary.** The algebra below holds for any finite `S`. The set used in
-every correctness experiment here is **seven points on a single factor with
-non-negative loadings**; E3 additionally times a 16-point grid. Nothing here shows
-that a single-factor grid is adequate for 40 underlyings — basis and
-idiosyncratic risk would need more factors or a wider set, and the evidence for
-*that* choice is not in this document. What is shown is that the decomposition,
-the closure and the lifecycle are correct for whatever finite `S` is picked.
+The **two** is exact, not a safety buffer. A filled position does two things to
+the account: it *owes* its requirement, up to the risk budget, and if the bad
+market move happens it *loses* money, also up to the risk budget, because the
+scenario part is by definition the worst loss. Both have to fit inside equity.
+With equity 100 and a risk budget of 50: fill to 50, the worst move loses 50,
+equity is 50 and the requirement is 50 — exactly equal. With a factor of 1.5 the
+budget is 66.7, the same move leaves equity at 33.3 against a requirement of
+66.7, and the account is in breach.
 
-**The partition is by gateway, not by symbol.** Two gateways can hold opposite
-positions in the *same* symbol, and those net inside the account, so gross is not
-additive across the partition.
+The result: **the requirement stays inside equity after any market move the
+scenario set covers, with no central call per order.** The price: only about
+half of equity is usable. In E1's binding trial every order fills at the worst
+price and fee the policy allows; the budgets reach 99% and the requirement is
+49% of equity, with no breach. Appendix D carries the algebra.
 
-**Lemma 1 — R is sub-additive.**
-`R(P) = max_k sum_g loss_k(P_g) <= sum_g max_k loss_k(P_g) = sum_g R(P_g)`: a
-single scenario cannot beat the per-gateway worst cases taken separately.
+**Model risk, stated.** Every correctness experiment in §2–§5 uses a simple
+scenario set: seven points on one factor. The split and the closure hold for
+*any* finite scenario set; E8 re-runs E1's oracle on seventeen scenarios with two
+factors, loadings of both signs and idiosyncratic moves, and finds no breach in
+600 trials, including 300 driven to 99% of the risk budget, while a control that
+drops the factor of two breaches in 6 of 300. What is not shown is that any
+particular set is adequate for 40 underlyings — that is a calibration question.
+**When the set is wrong, the architecture does three things:** a move outside it
+is handled by liquidation and the insurance fund (§5.4), which is what E9's
+flash crash exercises; the set is versioned data on the log (§4.1), so it can be
+widened between sessions and a replay still reproduces old decisions; and a
+wider set costs capacity, not latency, because admission is one pass over the
+set (E3: 7 → 16 scenarios, +34%).
 
-**Lemma 2 — gross is sub-additive.** Per symbol,
-`|sum_g q_{g,s}| <= sum_g |q_{g,s}|` by the triangle inequality; multiplying by a
-positive mark and summing gives `G_k(sum_g P_g) <= sum_g G_k(P_g)` for every `k`,
-and the same for `G+`, with equality only when every gateway holds the same sign
-in every symbol.
+## 2.3 What a lease grants
 
-**Lemma 3 — A does not decompose.** A convex function through the origin is
-super-additive on non-negative arguments, so `sum_g A(G_g) <= A(sum_g G_g)`.
-Per-gateway add-on allowances added up under-state the whole, however the
-positions are split.
+A lease is three budgets per account per gateway, for a term of 50–200 ms. **A
+lease cannot undo an admission it has already granted.** Everything below
+follows from that.
 
-The decomposition rule follows rather than being chosen:
-
-> The sub-additive parts divide into per-gateway ceilings checked locally. The
-> add-on does not; it is evaluated once, centrally, on the summed gross, and `A`
-> being non-decreasing is what makes that an upper bound.
-
-Chained, for the realised scenario `k`:
-
-    G_k(P')  <=  G+(P')  <=  sum_g G+(P'_g)  <=  sum_g λ_g^G
-
-the first step by construction, the second by Lemma 2, the third by the admission
-rule. `A` non-decreasing then carries it to
-`A(G_k(P')) <= A(sum_g λ_g^G)`. Nothing in that chain needs gross to be additive.
-Lemmas 1 and 3 are checked over 2,000 sampled portfolios in
-`tests/test_algebra.py`, in the predicted directions.
-
-## 2.4 What a lease grants
-
-A lease cannot undo an admission it has already granted. Everything here follows
-from that.
-
-### Three envelopes
-
-| Envelope | What it bounds | Why separate |
+| Budget | Bounds | Why it is separate |
 |---|---|---|
-| `λ_g^R` | worst-fill scenario requirement of everything the gateway holds | sub-additive, so it divides |
-| `λ_g^G` | worst-fill `G+` the gateway can reach | an order can lower `R` while raising gross |
-| `λ_g^D` | execution cost the gateway can still incur, plus cost already incurred that the equity the current lease was solved against does not yet reflect | its effect on equity is covered by neither the scenario requirement nor the gross add-on |
+| Risk | worst-case scenario loss of everything the gateway holds | the part that can be split |
+| Size (gross) | the largest total size the gateway's orders can reach | an order can lower risk while raising size, and the add-on is charged on size |
+| Cost | fees and slippage the gateway's orders can still incur | it lowers equity, and neither of the others covers it |
 
-The three are not three allocations: `λ^G` and `λ^D` are issued at fixed ratios
-to `λ^R`, so the solver searches one scalar along a ray through a
-three-dimensional feasible set. Dropping the second half of `λ^D` is what made
-capacity decay every term in an earlier implementation (d7).
+The three are issued at fixed ratios, so the allocator searches one number per
+account, not three.
 
-### What a gateway holds is orders, not positions
+**What a gateway checks is orders, not positions.** Two resting orders of
+opposite sign net to nothing, but if only one fills the account carries the
+other side. So each budget is checked against the worst subset of fills that
+could still happen. Because loss under one market move is linear, that needs no
+enumeration; the closed form matches brute force over every possible subset of fills on
+4,000 random books.
 
-Two resting orders of opposite sign net to nothing, and if only one fills the
-account carries the other side. The envelopes are taken over the worst subset of
-fills that could still occur, which needs no enumeration because the loss under a
-fixed scenario is linear:
+**Absolute figures, not the increment an order adds.** An order that flips a leg
+from short to long leaves the increment unchanged while the account's
+requirement jumps to its maximum (c1). Admission compares the whole worst-case
+figure against the budget.
 
-    E_k   = loss_k(filled) + sum_i max(0, loss_k(order_i))
-    R_wf  = max(0, ceil(max_k E_k / DEN))
-    G_wf  = sum_s max_j mark_s(j) * max(|filled_s + buy_s|, |filled_s - sell_s|)
+**Size is reserved at the highest price the scenario set reaches.** The add-on
+depends on size, size depends on price, and prices move during a term. In the
+worked case m1, reserving at today's price admits 296 lots and ends 382,143 above
+equity once the market reaches the edge of the set; reserving at the highest
+price admits 249 lots and ends 5,842 inside. The cost is 47 lots, about 16% of
+capacity (ADR-3).
 
-Both closed forms agree with enumeration of all 2^n fill subsets on 4,000 random
-books (`test_worst_fill_exhaustive`). Admission compares these **absolute**
-figures against the ceilings, not the increment an order adds: a leg flipped from
-short to long leaves the increment unchanged while the account's requirement moves
-to its maximum (c1).
+**The equity the budgets are solved against is mark-to-market equity**, not
+collateral: collateral plus cash and position value at current marks, less fees.
+That is why the mark-price pipeline (§2.5) sets how much capacity exists.
 
-### Where gross is measured
-
-A lease reserves against `G+`, not against the gross standing when the solve ran.
-A short position's adverse scenario raises the mark, raises gross and raises the
-add-on, while a figure measured at the issuance mark does not move. Reserving at
-the issuance mark admits 296 lots in the worked case of m1 and finishes 382,143
-above equity; reserving at `G+` admits 249 and finishes 5,842 inside. ADR-3 gives
-the cost and the scope of the tightness claim.
-
-### The condition and its closure
-
-    2 * sum_g λ_g^R  +  A( sum_g λ_g^G )  +  sum_g λ_g^D   <=   E_0
-
-with `E_0 = Collateral + sum_s (cash_s + q_s * mark_s) - fees`, mark-to-market
-equity rather than collateral. There is no market state in it.
-
-Write `P'` for the position the term ends with, `D` for the execution cost it
-incurred, `k` for the realised scenario. Three bounds come from the admission
-rule and the fourth because `R` is a maximum over a set containing `k`:
-
-    R(P')   <= sum_g λ_g^R      G_k(P') <= sum_g λ_g^G
-    D       <= sum_g λ_g^D      loss_k(P') <= R(P')
-
-Adding requirement, cost and realised loss:
-
-    M_k(P') + D + loss_k(P')  <=  2 sum_g λ_g^R + A(sum_g λ_g^G) + sum_g λ_g^D  <=  E_0
-
-and since `Equity_after(k) = E_0 - D - loss_k(P')`,
-
-    M_k(P')  <=  E_0 - D - loss_k(P')  =  Equity_after(k)
-
-**Subtracting `D` is why the third resource exists.** A conclusion of
-`M <= E_0 - loss` would leave execution cost out of the arithmetic while still
-listing `λ^D` as a ceiling.
-
-The factor of two is a closure, not a margin, and it is tight. Set `A = D = 0`
-and take `R(P') = λ^R` with the realised scenario attaining the maximum, so
-`loss_k = R`. Then `M_k = λ^R` and `Equity_after = E_0 - λ^R`, equal precisely
-when `E_0 = 2λ^R`. With `c < 2` the solve issues `λ^R = E_0/c`, and the same
-position ends with `M_k = E_0/c > E_0 - E_0/c`. The coefficient cannot be reduced.
-
-### What the closure costs
-
-Utilisation is capped near half of equity before the add-on reserve. In E1's
-binding trial — every order filled at the worst price and fee the policy allows —
-the risk and debit envelopes reach 99% and the requirement is 49% of equity, with
-no breach. The offset decomposition gives up is separately §2.3's sub-additivity
-gap (§7).
-
-## 2.5 Ending authority
+## 2.4 Ending authority
 
 Every lease carries `(account, epoch, generation, lease_id)` and is registered at
 the ordering point against the account, the holder and the authority kind
@@ -203,15 +150,35 @@ admits nothing — including orders that look locally like risk reduction, becau
 an order lowering one gateway's requirement can raise the account's by removing a
 hedge held elsewhere (c9).
 
+## 2.5 Mark prices
+
+Marks carry no authority on the admission path — the check reads no market
+state — but they set mark-to-market equity, where the scenario set is centred,
+and the highest price size is reserved at. So **a wrong mark changes how much
+capacity is solved for**, and a mark held too high is §6.3 A1 by another route:
+E5 measures a breach that tracks an equity overstatement one for one.
+
+| Decision | What we get | What we pay |
+|---|---|---|
+| Several independent index sources per underlying, each checked for staleness on its own | one frozen or manipulated feed cannot set the mark | more feeds to operate and reconcile |
+| The mark is a trimmed statistic across the live sources, with a bound on how far it may move per publish | a single outlier print is dropped | a genuine fast move is followed with a lag of a few publishes |
+| Marks are versioned data on the log, activated at a sequence (§4.1) | every admission and liquidation replays against the mark it saw | a correction is a new record, not an edit |
+| Fewer than a quorum of live sources: the allocator stops issuing and existing leases run out their term | capacity is never solved against a mark nobody can confirm | order entry for affected accounts stops within one term |
+| Divergence across sources pages (§8.2, alert 4) | an operator sees the attack or the outage | — |
+
+The number of sources, the trim and the per-publish bound are operational
+parameters chosen per underlying; none of them is derived here. The pipeline is
+designed and not built: the simulator takes marks as given.
+
 ## 2.6 Components
 
 | Component | Holds | Decides |
 |---|---|---|
 | Ingress gateway | three ceilings per account; worst-fill running totals over the grid | admit or refuse, by comparing absolute figures against ceilings. Its state is a deterministic fold of the log, so a snapshot bounds replay time rather than being a correctness requirement |
 | Ordering point | the log; the lease registry; sessions; fences and seals | that an admission is the next number for a live, correctly bound lease; that a fill matches its recorded terms; that a basket commits as one record. Writes nothing when it refuses |
-| Margin allocator | committed exposure per holder; generations; credit versions | the condition of §2.4, once per account per issuance. Sharded by account, ≈ 16 shards |
+| Margin allocator | committed exposure per holder; generations; credit versions | the condition of §2.2, once per account per issuance. Sharded by account, ≈ 16 shards |
 | Liquidator | the merged account view | which basket to transfer, checked against the merged account rather than a ceiling — the check c9 shows a gateway cannot make. Inside the trusted computing base on its own account (§6.1) |
-| Market-data publisher | marks | nothing on the admission path, but marks set equity, the scenario displacements and `G+`, so this path fixes how much capacity is solved for. Named here, not designed |
+| Mark-price pipeline | marks, per source and published | nothing on the admission path, but marks set equity and the reserve, so this path fixes how much capacity is solved for (§2.5) |
 | Matching core | books | unchanged; applies a client order ID at most once |
 | Ledger | postings | double-entry, append-only. A lease never appears in it (§4.3) |
 
@@ -231,23 +198,14 @@ MB/s order stream to carry a value each gateway derives from ≈ 8 MB/s of input
 (ADR-4 has the arithmetic). Also not on the log: the scenario vectors and running
 gross, caches of pure functions of the order state.
 
-**Batching, and what it costs here.** The running case replicates a batch of
-sequenced commands rather than one at a time, because replication cost is
-per-round-trip and amortises (Part 4 §3). The same applies to admissions, and it
-interacts with two things this design added. A batch is committed or not as a
-unit, so the gap-free per-lease sequence survives batching only if the ordering
-point assigns numbers at batch entry and refuses the whole batch on any gap —
-partial commit would leave a hole that a seal later claims to cover. And a fence
-arriving mid-batch must take effect at the batch boundary, not inside it:
-admitting the first half of a batch under a lease fenced before the second half
-would produce admissions after the seal's terminal sequence. Both are
-resolvable — number at entry, fence between batches — and neither is
-implemented; the simulator commits one admission at a time, which is the
-worst case for replication cost and the simplest case for the argument.
+**Batching.** Replicating a batch of commands amortises the round trip (Part 4
+§3). Two rules keep it compatible with this design: the ordering point numbers a
+batch at entry and refuses the whole batch on any gap, so a seal never covers a
+hole; and a fence takes effect between batches, never inside one. Neither is
+implemented; the simulator commits one admission at a time.
 
 ## 2.8 What this architecture does not do
 
 It does not identify who is behind an order, price liquidity, or make the
-matching core elastic. And it does not remove the need for a liquidation
-waterfall: it provides the trigger, the fencing and the unwind, and leaves who
-absorbs a shortfall to a design this document does not contain.
+matching core elastic. The liquidation waterfall below the unwind — the venue
+book's limits, the insurance fund and ADL — is designed in §5.4 and not built.

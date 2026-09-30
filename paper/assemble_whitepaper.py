@@ -10,8 +10,8 @@ import re
 import subprocess
 import sys
 
-REPO = "/home/claude/build"
-OUT = "/home/claude/tex/dense"
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.path.join(REPO, "build")
 
 ORDER = [
     ("01_context_and_requirements.md", None),
@@ -26,6 +26,8 @@ ORDER = [
     ("09_ai_disclosure.md", None),
     ("A_decision_history.md", None),
     ("C_protocols.md", None),
+    ("A_D_mechanism.md", None),
+    ("A_E_figures.md", None),
 ]
 
 # height reserved for each rendered mermaid figure, in order of appearance
@@ -64,10 +66,10 @@ CAPTION = {
 # scale factor, and anything under about 6.5pt stops being readable in print.
 # The source has one fenced block per panel, so BLOCK_OF maps block index to the
 # figure it belongs to and only the first block of a figure emits anything.
-BLOCK_OF = [1, 2, 2, 2, 3, 3, 3, 4, 5]
+BLOCK_OF = [1, 2, 2, 2, 4, 5, 3, 3, 3]
 
 BLOCK = {
-    1: r"\includegraphics[width=\linewidth]{fig1_components}",
+    1: r"\includegraphics[width=0.88\linewidth]{fig1_components}",
     2: (r"\includegraphics[width=\linewidth]{fig2a}\\[0.6em]"
         r"\includegraphics[width=\linewidth]{fig2b}\\[0.6em]"
         r"\includegraphics[width=\linewidth]{fig2c}"),
@@ -75,7 +77,7 @@ BLOCK = {
         r"\includegraphics[height=18.5cm]{fig3b}\hfill"
         r"\includegraphics[height=18.5cm]{fig3c}"),
     4: r"\includegraphics[width=0.62\linewidth]{fig4_ladder}",
-    5: r"\includegraphics[width=\linewidth]{fig5_deployment}",
+    5: r"\includegraphics[width=0.72\linewidth]{fig5_deployment}",
 }
 
 
@@ -132,7 +134,8 @@ def convert(path):
     md = re.sub(r"^(#+) ", lambda m: "#" * (len(m.group(1)) + 1) + " ", md,
                 flags=re.M)
     p = subprocess.run(
-        ["pandoc", "-f", "markdown+pipe_tables+raw_attribute", "-t", "latex",
+        ["pandoc", "-f", "markdown+pipe_tables+raw_attribute+tex_math_dollars",
+         "-t", "latex",
          "--wrap=preserve"],
         input=md, capture_output=True, text=True)
     if p.returncode != 0:
@@ -155,6 +158,9 @@ PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
   BoldFont=texgyrecursor-bold.otf,
   ItalicFont=texgyrecursor-italic.otf,
   Scale=0.82]
+\usepackage{amsmath,amssymb}
+\setlength{\abovedisplayskip}{5pt}\setlength{\belowdisplayskip}{5pt}
+\setlength{\abovedisplayshortskip}{3pt}\setlength{\belowdisplayshortskip}{3pt}
 \usepackage{longtable,booktabs,array,calc}
 \usepackage{etoolbox}
 \usepackage{graphicx}
@@ -201,6 +207,8 @@ Group 1}\\[0.3em]
 
 body = []
 for i, (path, _) in enumerate(ORDER):
+    if path == "09_ai_disclosure.md":
+        body.append("\\clearpage\n")
     body.append("\\label{start:%d}%%\n" % i)
     body.append(convert(path))
     body.append("\n")

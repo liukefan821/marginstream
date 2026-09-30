@@ -13,6 +13,25 @@ empty sample, and exited 0.
 Apply these by hand after extracting. Each is a path removed from the package
 relative to the previous one.
 
+### Package of 2026-09-30 (after approval)
+
+No deletions. Added: `marginstream/scenarios.py`, `experiments/e8_multifactor.py`,
+`experiments/e9_flash_crash.py`, their two result files, `paper/A_D_mechanism.md`,
+`paper/A_E_figures.md`, and the nine rendered figures in `paper/figures/` (taken
+from the v6 PDF, so the build no longer needs a browser). The algebra of §2.3–2.4
+moved to Appendix D; the liquidation figure moved to Appendix E, so figures 4 and
+5 are renumbered 3 and 4. `paper/assemble_whitepaper.py` now resolves its paths
+from its own location and writes to `build/`.
+
+### Package of 2026-09-16b (equations)
+
+No deletions. The equations in §2.3, §2.4 and §5.4 are LaTeX math rather than
+fixed-width text, and the symbols quoted inline alongside them match. GitHub
+renders `$...$` and `$$...$$` in markdown, so the sources still read correctly
+there. `paper/MarginStream_whitepaper.tex` is the generated LaTeX, added so a
+teammate can see what the build produces; it is **generated, not source** —
+edit the markdown and re-run `paper/assemble_whitepaper.py`.
+
 ### Package of 2026-09-16 (figures and page budget)
 
     git rm paper/B_target_deployment.md

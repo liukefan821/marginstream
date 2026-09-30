@@ -1,0 +1,2376 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[top=1.9cm,bottom=1.9cm,left=2.0cm,right=2.0cm]{geometry}
+\usepackage{fontspec}
+\defaultfontfeatures{Path=/usr/share/texmf/fonts/opentype/public/tex-gyre/}
+\setmainfont{texgyretermes-regular.otf}[
+  BoldFont=texgyretermes-bold.otf,
+  ItalicFont=texgyretermes-italic.otf,
+  BoldItalicFont=texgyretermes-bolditalic.otf]
+\setmonofont{texgyrecursor-regular.otf}[
+  BoldFont=texgyrecursor-bold.otf,
+  ItalicFont=texgyrecursor-italic.otf,
+  Scale=0.82]
+\usepackage{amsmath,amssymb}
+\setlength{\abovedisplayskip}{5pt}\setlength{\belowdisplayskip}{5pt}
+\setlength{\abovedisplayshortskip}{3pt}\setlength{\belowdisplayshortskip}{3pt}
+\usepackage{longtable,booktabs,array,calc}
+\usepackage{etoolbox}
+\usepackage{graphicx}
+\usepackage[export]{adjustbox}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf,skip=4pt}
+\usepackage{enumitem}
+\setlist{nosep,leftmargin=1.4em}
+\usepackage[hidelinks]{hyperref}
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{1.1em}{0.5em}
+\titlespacing*{\subsection}{0pt}{0.8em}{0.35em}
+\titlespacing*{\subsubsection}{0pt}{0.6em}{0.25em}
+\titleformat{\section}{\large\bfseries}{}{0pt}{}
+\titleformat{\subsection}{\normalsize\bfseries}{}{0pt}{}
+\titleformat{\subsubsection}{\normalsize\itshape}{}{0pt}{}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.32em}
+\linespread{1.0}
+\usepackage{fancyhdr}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{\small MarginStream}
+\fancyhead[R]{\small SC6118 Capstone --- Group 1}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+\AtBeginEnvironment{longtable}{\small}
+\providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\newcommand{\passthrough}[1]{#1}
+
+\begin{document}
+
+\begin{center}
+{\LARGE\bfseries MarginStream}\\[0.4em]
+{\large A cross-margin derivatives venue with separated margin and matching
+authorities}\\[0.8em]
+{\normalsize SC6118 Scalable Systems Architecture for Fintech --- Capstone,
+Group 1}\\[0.3em]
+{\small LIU KEFAN \quad ZHOU CONGXIANG \quad WU YOUJHEN \quad ZHANG HAOXI}
+\end{center}
+
+\vspace{0.6em}
+\label{start:0}%
+
+\hypertarget{business-context-and-requirements}{%
+\subsection{1. Business context and requirements}\label{business-context-and-requirements}}
+
+\hypertarget{the-venue}{%
+\subsubsection{1.1 The venue}\label{the-venue}}
+
+MarginStream is a derivatives venue offering linear perpetual and dated futures on
+40 underlyings, 120 contracts, to APAC retail and institutional clients, all
+margined against a single account balance rather than contract by contract.
+Leverage is capped at 20×; parameters below assume a median active account at 8×.
+The commercial reason for a unified account is capital efficiency --- a client long
+one contract and short a correlated one should not fund both legs separately --- so
+any design that quietly removes the offset removes the reason the venue exists,
+and the cost of every conservative step below is stated as a number.
+
+Scale: 10\textsuperscript{6} registered accounts, 10\textsuperscript{5} with open positions, 10\textsuperscript{4} whose positions or
+marks change between two issuances. A median account holds 5 contracts; the tail
+holds 50.
+
+\hypertarget{the-requirement-that-does-not-decompose}{%
+\subsubsection{1.2 The requirement that does not decompose}\label{the-requirement-that-does-not-decompose}}
+
+The running case places pre-trade risk before the sequencer because the check is
+per-account and per-asset: freezing funds for one order says nothing about any
+other book, so it runs per connection and scales horizontally (Part 5 §1).
+Matching is sharded by symbol, single writer per shard (Part 2 §3).
+
+A unified cross-margin account removes the first property and leaves the second.
+A fill on one contract changes the requirement of positions in other contracts
+held by the same account, sitting on shards being written concurrently. The
+invariant
+
+\begin{quote}
+the account's margin requirement must not exceed its equity
+\end{quote}
+
+is global over the account and non-additive over contracts, yet it must be
+enforced before the order reaches the book, inside the same latency budget.
+
+Locking the account, giving each holder a fixed sub-limit with no offset, and
+admitting optimistically are the three obvious resolutions; ADR-1 records why
+each fails.
+
+§2 keeps matching exactly as the running case has it and moves the difficulty
+into a second authority: a margin allocator that runs off the order path and
+hands \textbf{each ingress gateway} a locally checkable share of the account's
+capacity. Matching shards hold no lease and make no margin decision.
+
+\textbf{Where this sits relative to the nearest candidate system.} MarginStream is
+candidate 3 --- a real-time risk and liquidation engine for a margin venue --- with
+a harder core. Candidate 3 assumes the account-level check has already been
+serialised somewhere; here it cannot be, because the books it depends on are
+sharded by symbol and written concurrently. Candidate 3's obligations still
+apply and are met here: the mark-price pipeline (§2.5), the liquidation
+waterfall from unwind through the venue book and insurance fund to ADL (§5.4),
+and a flash crash run as a test vector (E9, §5.4).
+
+\hypertarget{scope}{%
+\subsubsection{1.3 Scope}\label{scope}}
+
+Designed here: the venue's requirements, the margin authority and admission
+path, the consistency map, the derivatives accounting model, the degradation
+ladder, recovery, the liquidation waterfall, the threat model, operations and
+the target deployment. Out of scope: order routing, market making, fiat rails,
+wallet infrastructure.
+
+Four things are taken from the running case and cited rather than re-derived.
+What matters is where each sits and what the margin authority does to it:
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Cited from the running case
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Where it sits here (Figure 1)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+How the margin authority interacts with it
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Matching engine, single writer per symbol (Part 2 §3) & behind the ordering point, eight shards & none on the order path: a shard holds no lease and makes no margin decision. Liquidation does not use it; baskets are internal transfers (§5.4) \\
+Replicated log (Part 4 §3) & the ordering point's log & the allocator writes lease inputs to it and reads occupancy from it; gateways derive their budgets from it; fences, seals and barriers are records on it \\
+Determinism & every component's state is a fold of the log & budgets are derived deterministically from logged inputs, so they are not logged themselves (ADR-4); all arithmetic is integer \\
+Double-entry ledger (Part 3 §1) & downstream of fills and baskets & a lease never appears in it; \texttt{USER\_MARGIN\_HOLD} replaces per-order \texttt{USER\_HOLD}; funding, the insurance fund and ADL are new postings (§4.4) \\
+\end{longtable}
+
+\hypertarget{non-functional-requirements}{%
+\subsubsection{1.4 Non-functional requirements}\label{non-functional-requirements}}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\#
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Requirement
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Target
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Consequence for the design
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+1 & Order throughput & 100k/s sustained, 1M/s burst & Admission is a local array operation; no allocator call on the order path \\
+2 & Admission-path latency & p50 \textless{} 20 µs, p99 \textless{} 200 µs, above matching & Per-account per-gateway scenario vector kept resident. Argued, not measured: E3 supports the scaling, not the target \\
+3 & Matching latency & p50 \textless{} 100 µs, p99 \textless{} 1 ms in-engine & Unchanged; single writer per symbol \\
+4 & Margin correctness & Requirement never exceeds equity after any move the scenario grid covers & The closure of §2.2, with the factor of two shown tight \\
+5 & Tightening latency & Binds within the lease term under partition, immediately when the ordering point is reachable & Fence at the ordering point; §1.5 \\
+6 & Allocator cadence & Issuance every 50--200 ms & §1.5, §1.6 \\
+7 & Allocator throughput & ≈ 3 × 10\textsuperscript{7} scenario operations per issuance & Sharded by account; grid evaluated as a vector \\
+8 & Availability & 99.99\% for order entry; failover \textless{} 3 s & Replicated log, as in the running case \\
+9 & Degradation & The venue can bound its own loss in every state above HALT. Client-initiated risk reduction is \textbf{not} preserved under partition & Venue-initiated liquidation (§5.4); §3.3 states what is given up \\
+10 & Auditability & \textbf{Target:} every admission \emph{and refusal} replayable with the figures it compared. \textbf{Today:} admissions only. A refusal never reaches the ordering point, and §2.6's gateway refusal journal is not built & \\
+11 & Solvency & \textbf{Target:} Σ user liabilities ≤ Σ venue assets, continuously checkable. \textbf{Today:} three facts about one account (§4.3). The ledger is unimplemented and the fund's size is argued from one stress run (§5.4), so the venue-level claim is an argument & \\
+\end{longtable}
+
+Rows 1, 3 and 8 are inherited; 2, 6 and 7 derived in §1.5--1.7; 4, 5 and 9
+established in §2, §3 and §5. Rows 10 and 11 are targets, marked as such; §9.4
+lists everything designed and not built.
+
+\hypertarget{what-sets-the-lease-term}{%
+\subsubsection{1.5 What sets the lease term}\label{what-sets-the-lease-term}}
+
+The term is the main operational trade-off, and it is bounded from both sides.
+\textbf{Recompute cost is the floor:} ≈ 3 × 10\textsuperscript{7} operations per issuance (§1.6) is
+ordinary at a 100 ms cadence and not at 1 ms. \textbf{Tightening latency is the
+ceiling:} a gateway nobody can reach keeps spending its budget until the term
+ends.
+
+\begin{quote}
+The lease term is the worst-case delay before a credit cut binds on a gateway
+the allocator cannot reach.
+\end{quote}
+
+Raising or lowering a limit on a reachable gateway takes effect at the next
+issuance; a fence at the ordering point (§2.4) binds immediately on any gateway,
+reachable or not, and is kept for the heavy cases. 50--200 ms is a design target
+against an assumed tightening SLO, not a regulatory figure.
+
+\hypertarget{what-the-allocator-has-to-compute-and-how-often}{%
+\subsubsection{1.6 What the allocator has to compute, and how often}\label{what-the-allocator-has-to-compute-and-how-often}}
+
+Per account per issuance: one evaluation of the scenario term at \textbar S\textbar{} × contracts
+≈ 16 × 5 ≈ 80 multiply-adds, one feasibility check of §2.2's condition at the same
+order, and a bisection for the scale over 10\textsuperscript{9} minor units at ≈ 30 iterations ---
+≈ 3 × 10\textsuperscript{3} operations in all. At 10\textsuperscript{4} accounts changed per issuance that is
+\textbf{≈ 3 × 10\textsuperscript{7} per issuance} and, at a 100 ms cadence, \textbf{≈ 3 × 10\textsuperscript{8} per second}.
+Sixteen allocator shards (§2.6) carry ≈ 2 × 10\textsuperscript{7} each: headroom, not a fit.
+
+No invariant spans two accounts, which is what makes the sharding trivial, and
+recompute is incremental: unchanged positions and marks keep their ceilings.
+
+\hypertarget{what-the-admission-path-may-do-per-order}{%
+\subsubsection{1.7 What the admission path may do per order}\label{what-the-admission-path-may-do-per-order}}
+
+The admission decision must not recompute the requirement from positions. Each
+gateway keeps, per account, the running loss numerator under each of the \textbar S\textbar{}
+scenarios plus the worst-fill gross and debit totals, updated on each order state
+change. Admitting is one pass over the grid, one symbol's gross update and three
+integer comparisons --- independent of how many orders are live.
+
+Memory is ≈ 128 B per (account, gateway) pair; at 10\textsuperscript{5} active accounts touching 5
+gateways each, ≈ 5 × 10\textsuperscript{5} pairs and ≈ 64 MB resident.
+
+\textbf{Measured, not argued.} E3 times the incremental path against a full scan
+computing identical envelopes, after checking the two agree on 400 random books.
+From the recorded run in \texttt{results/e3\_hot\_path.json}: increasing live orders 10×,
+from 50 to 500, changed the incremental median by 1.1\%, while the full scan over
+the same range grew 6.7×; widening the grid from 7 scenarios to 16 raised the
+incremental median by 34\%. That is O(\textbar S\textbar) against O(orders × \textbar S\textbar).
+
+Absolute timings are not quoted: they are CPython wall-clock figures, three
+orders of magnitude from a compiled implementation. The ratios support the
+scaling claim; NFR row 2's target remains argued.
+
+
+
+\label{start:1}%
+
+\hypertarget{architecture}{%
+\subsection{2. Architecture}\label{architecture}}
+
+\hypertarget{topology}{%
+\subsubsection{2.1 Topology}\label{topology}}
+
+Figure 1 gives the component view. Orders reach the venue through N ingress
+admission gateways, pass through a single \textbf{ordering point}, and are forwarded
+to a matching core partitioned by symbol. Matching keeps a single-writer total
+order per symbol and no order crosses a shard; that is the running case's
+arrangement and this design does not touch it.
+
+What is added is a second authority. The \textbf{margin allocator} runs off the order
+path, computes each account's capacity, and hands each gateway a locally
+checkable share of it. A gateway decides in constant time from what it already
+holds; it calls no allocator and reads no other gateway's state.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Partition key
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Why
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Matching & Symbol & Price-time priority is a total order per book, so a book must have one writer \\
+Allocator & Account & Margin is an account-level quantity, and no invariant spans two accounts \\
+\end{longtable}
+
+The partitionings are orthogonal, which is the structural point: an account's
+positions spread across matching shards, a shard holds many accounts, and neither
+needs the other's partition to be correct. The single-writer core is plural --- one
+writer per symbol for the book, one per account for the capacity.
+
+\hypertarget{the-idea-in-one-page}{%
+\subsubsection{2.2 The idea in one page}\label{the-idea-in-one-page}}
+
+\textbf{Why the requirement cannot be checked one book at a time.} A client long
+BTC-PERP and short ETH-PERP is hedged: the account owes less than the two legs
+would owe separately. That offset is the product. But the two legs sit on
+different matching shards, written concurrently, and an order arrives at one of
+them. No single place sees the whole account at the moment the order has to be
+accepted or refused, and ``requirement ≤ equity'' is a statement about the whole
+account. Checking each book on its own lets an account build more than it can
+pay for: E2's naive control reaches a requirement of 201,000 on 2,000 of
+collateral.
+
+\textbf{Why not ask a central service on every order.} Admission happens at N
+gateways in front of the shards. Either every order pays a round trip to one
+shared counter per account, or each gateway is handed a share it can check
+locally. \textbf{The value of the share is upstream early shedding} --- stopping a
+burst before it queues at a single-writer shard. With one gateway the design
+collapses to a local counter, and we would say so rather than defend it.
+
+\textbf{How the requirement is split.} The requirement has two parts.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{The scenario part} is the worst loss the account takes over a fixed set of
+  market moves. It \emph{can} be split: the worst case of the whole account is never
+  more than the worst cases of its parts added up, because one market move
+  cannot be the worst for every part at once. So each gateway gets its own
+  risk budget and checks it locally.
+\item
+  \textbf{The concentration add-on} grows faster than size (it is convex). Pieces of
+  it add up to \emph{less} than the whole, so splitting it would under-charge. It is
+  never split: it is reserved once, centrally, on the total size all gateways
+  together may reach.
+\end{itemize}
+
+\textbf{What the closure buys.} The allocator issues budgets so that
+
+\begin{verbatim}
+2 × (risk budgets) + add-on(total size budget) + (cost budgets) ≤ equity
+\end{verbatim}
+
+The \textbf{two} is exact, not a safety buffer. A filled position does two things to
+the account: it \emph{owes} its requirement, up to the risk budget, and if the bad
+market move happens it \emph{loses} money, also up to the risk budget, because the
+scenario part is by definition the worst loss. Both have to fit inside equity.
+With equity 100 and a risk budget of 50: fill to 50, the worst move loses 50,
+equity is 50 and the requirement is 50 --- exactly equal. With a factor of 1.5 the
+budget is 66.7, the same move leaves equity at 33.3 against a requirement of
+66.7, and the account is in breach.
+
+The result: \textbf{the requirement stays inside equity after any market move the
+scenario set covers, with no central call per order.} The price: only about
+half of equity is usable. In E1's binding trial every order fills at the worst
+price and fee the policy allows; the budgets reach 99\% and the requirement is
+49\% of equity, with no breach. Appendix D carries the algebra.
+
+\textbf{Model risk, stated.} Every correctness experiment in §2--§5 uses a simple
+scenario set: seven points on one factor. The split and the closure hold for
+\emph{any} finite scenario set; E8 re-runs E1's oracle on seventeen scenarios with two
+factors, loadings of both signs and idiosyncratic moves, and finds no breach in
+600 trials, including 300 driven to 99\% of the risk budget, while a control that
+drops the factor of two breaches in 6 of 300. What is not shown is that any
+particular set is adequate for 40 underlyings --- that is a calibration question.
+\textbf{When the set is wrong, the architecture does three things:} a move outside it
+is handled by liquidation and the insurance fund (§5.4), which is what E9's
+flash crash exercises; the set is versioned data on the log (§4.1), so it can be
+widened between sessions and a replay still reproduces old decisions; and a
+wider set costs capacity, not latency, because admission is one pass over the
+set (E3: 7 → 16 scenarios, +34\%).
+
+\hypertarget{what-a-lease-grants}{%
+\subsubsection{2.3 What a lease grants}\label{what-a-lease-grants}}
+
+A lease is three budgets per account per gateway, for a term of 50--200 ms. \textbf{A
+lease cannot undo an admission it has already granted.} Everything below
+follows from that.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Budget
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Bounds
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Why it is separate
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Risk & worst-case scenario loss of everything the gateway holds & the part that can be split \\
+Size (gross) & the largest total size the gateway's orders can reach & an order can lower risk while raising size, and the add-on is charged on size \\
+Cost & fees and slippage the gateway's orders can still incur & it lowers equity, and neither of the others covers it \\
+\end{longtable}
+
+The three are issued at fixed ratios, so the allocator searches one number per
+account, not three.
+
+\textbf{What a gateway checks is orders, not positions.} Two resting orders of
+opposite sign net to nothing, but if only one fills the account carries the
+other side. So each budget is checked against the worst subset of fills that
+could still happen. Because loss under one market move is linear, that needs no
+enumeration; the closed form matches brute force over every possible subset of fills on
+4,000 random books.
+
+\textbf{Absolute figures, not the increment an order adds.} An order that flips a leg
+from short to long leaves the increment unchanged while the account's
+requirement jumps to its maximum (c1). Admission compares the whole worst-case
+figure against the budget.
+
+\textbf{Size is reserved at the highest price the scenario set reaches.} The add-on
+depends on size, size depends on price, and prices move during a term. In the
+worked case m1, reserving at today's price admits 296 lots and ends 382,143 above
+equity once the market reaches the edge of the set; reserving at the highest
+price admits 249 lots and ends 5,842 inside. The cost is 47 lots, about 16\% of
+capacity (ADR-3).
+
+\textbf{The equity the budgets are solved against is mark-to-market equity}, not
+collateral: collateral plus cash and position value at current marks, less fees.
+That is why the mark-price pipeline (§2.5) sets how much capacity exists.
+
+\hypertarget{ending-authority}{%
+\subsubsection{2.4 Ending authority}\label{ending-authority}}
+
+Every lease carries \texttt{(account,\ epoch,\ generation,\ lease\_id)} and is registered at
+the ordering point against the account, the holder and the authority kind
+(Appendix C.3). A holder is \texttt{(gateway\_id,\ incarnation)}: a process that restarts
+and reuses its identity is a different holder, and both may be live at once.
+
+Two quantities are tracked per holder and only one expires. \textbf{A term ends
+authority to admit; it never ends the exposure already created.} A clock
+comparison does not prove a partitioned holder has stopped --- its clock may be
+behind. A \textbf{fence at the ordering point} does, because nothing reaches a book
+except through it, and it need not reach the gateway: E7 fences without telling
+any gateway, the ordering point turns away 50 submissions, and the run is
+otherwise identical.
+
+A fence is not terminal for exposure either: a resting order can still fill.
+Removing its reservation needs a cancel acknowledged at the ordering point;
+lowering a holder's recorded exposure needs a terminal reconciliation with that
+lease's seal, or an account-wide barrier. §5.4 is the full lifecycle.
+
+When the solve is infeasible, leases are issued in \textbf{quarantine} and the gateway
+admits nothing --- including orders that look locally like risk reduction, because
+an order lowering one gateway's requirement can raise the account's by removing a
+hedge held elsewhere (c9).
+
+\hypertarget{mark-prices}{%
+\subsubsection{2.5 Mark prices}\label{mark-prices}}
+
+Marks carry no authority on the admission path --- the check reads no market
+state --- but they set mark-to-market equity, where the scenario set is centred,
+and the highest price size is reserved at. So \textbf{a wrong mark changes how much
+capacity is solved for}, and a mark held too high is §6.3 A1 by another route:
+E5 measures a breach that tracks an equity overstatement one for one.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Decision
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+What we get
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+What we pay
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Several independent index sources per underlying, each checked for staleness on its own & one frozen or manipulated feed cannot set the mark & more feeds to operate and reconcile \\
+The mark is a trimmed statistic across the live sources, with a bound on how far it may move per publish & a single outlier print is dropped & a genuine fast move is followed with a lag of a few publishes \\
+Marks are versioned data on the log, activated at a sequence (§4.1) & every admission and liquidation replays against the mark it saw & a correction is a new record, not an edit \\
+Fewer than a quorum of live sources: the allocator stops issuing and existing leases run out their term & capacity is never solved against a mark nobody can confirm & order entry for affected accounts stops within one term \\
+Divergence across sources pages (§8.2, alert 4) & an operator sees the attack or the outage & --- \\
+\end{longtable}
+
+The number of sources, the trim and the per-publish bound are operational
+parameters chosen per underlying; none of them is derived here. The pipeline is
+designed and not built: the simulator takes marks as given.
+
+\hypertarget{components}{%
+\subsubsection{2.6 Components}\label{components}}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Component
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Holds
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Decides
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Ingress gateway & three ceilings per account; worst-fill running totals over the grid & admit or refuse, by comparing absolute figures against ceilings. Its state is a deterministic fold of the log, so a snapshot bounds replay time rather than being a correctness requirement \\
+Ordering point & the log; the lease registry; sessions; fences and seals & that an admission is the next number for a live, correctly bound lease; that a fill matches its recorded terms; that a basket commits as one record. Writes nothing when it refuses \\
+Margin allocator & committed exposure per holder; generations; credit versions & the condition of §2.2, once per account per issuance. Sharded by account, ≈ 16 shards \\
+Liquidator & the merged account view & which basket to transfer, checked against the merged account rather than a ceiling --- the check c9 shows a gateway cannot make. Inside the trusted computing base on its own account (§6.1) \\
+Mark-price pipeline & marks, per source and published & nothing on the admission path, but marks set equity and the reserve, so this path fixes how much capacity is solved for (§2.5) \\
+Matching core & books & unchanged; applies a client order ID at most once \\
+Ledger & postings & double-entry, append-only. A lease never appears in it (§4.3) \\
+\end{longtable}
+
+\hypertarget{what-is-on-the-replicated-log}{%
+\subsubsection{2.7 What is on the replicated log}\label{what-is-on-the-replicated-log}}
+
+Every admission with its lease, sequence number, holder and terms; every fill
+with price and fee; every cancel acknowledgement; every fence with its seal;
+every liquidation basket as one record; every settlement barrier; and the lease
+inputs per account per issuance.
+
+Three components reconstruct the same facts from it without reaching each other:
+a recovering gateway rebuilds its order state, the ledger rebuilds the account,
+and the allocator computes occupancy for a holder that may be gone.
+
+Not on the log: the per-gateway ceilings, which cost ≈ 32 MB/s against an ≈ 12.8
+MB/s order stream to carry a value each gateway derives from ≈ 8 MB/s of inputs
+(ADR-4 has the arithmetic). Also not on the log: the scenario vectors and running
+gross, caches of pure functions of the order state.
+
+\textbf{Batching.} Replicating a batch of commands amortises the round trip (Part 4
+§3). Two rules keep it compatible with this design: the ordering point numbers a
+batch at entry and refuses the whole batch on any gap, so a seal never covers a
+hole; and a fence takes effect between batches, never inside one. Neither is
+implemented; the simulator commits one admission at a time.
+
+\hypertarget{what-this-architecture-does-not-do}{%
+\subsubsection{2.8 What this architecture does not do}\label{what-this-architecture-does-not-do}}
+
+It does not identify who is behind an order, price liquidity, or make the
+matching core elastic. The liquidation waterfall below the unwind --- the venue
+book's limits, the insurance fund and ADL --- is designed in §5.4 and not built.
+
+
+
+\label{start:2}%
+
+\hypertarget{architecture-diagrams}{%
+\subsection{2.9 Architecture diagrams}\label{architecture-diagrams}}
+
+The three views §2 requires --- component, data flow, deployment --- plus the
+degradation ladder. The liquidation flow is in Appendix E. Mermaid source; \texttt{paper/DIAGRAM\_EXPORT.md}
+covers rendering.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\hypertarget{figure-1-component-view}{%
+\subsubsection{Figure 1 --- Component view}\label{figure-1-component-view}}
+
+Two authorities partitioned on different keys, and one ordering point that both
+of them and every recovery path read from. The liquidator is drawn apart from the
+gateways because its orders are checked against the merged account rather than a
+ceiling, and its transfers do not touch the order books.
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=0.88\linewidth]{fig1_components}
+\caption{Component view. Two authorities partitioned on different keys, and one ordering point both of them and every recovery path read from. The thick edge is the lease registration this design would be unsound without.}
+\end{figure}
+
+Solid edges are the order path; dashed edges are asynchronous. The allocator
+never reads a gateway: every figure it acts on comes from the log. The thick edge
+is the one this design would be unsound without --- a \texttt{lease\_id} alone is a bearer
+token, and the ordering point knows which account, holder and authority kind it
+belongs to only because the single issuer registers the binding.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\hypertarget{figure-2-data-flow-for-one-order}{%
+\subsubsection{Figure 2 --- Data flow for one order}\label{figure-2-data-flow-for-one-order}}
+
+Three stages. The first two are the gateway's and nothing downstream re-derives
+them; the third is the ordering point's and a compromised gateway cannot
+influence it. Refusals are collapsed to one node per stage.
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\linewidth]{fig2a}\\[0.6em]\includegraphics[width=\linewidth]{fig2b}\\[0.6em]\includegraphics[width=\linewidth]{fig2c}
+\caption{Data flow for one order, in three stages. The first two are the gateway's and nothing downstream re-derives them; the third is the ordering point's and a compromised gateway cannot influence it. Refusals are collapsed to one node per stage; the reason codes are listed in the sections cited.}
+\end{figure}
+
+The whole per-order margin cost is the one pass over the scenario grid in stage
+two: the running totals are updated per order state change rather than
+recomputed, so admission is flat in the order count and linear in the grid width
+(E3).
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\hypertarget{figure-3-failure-paths-and-the-degradation-ladder}{%
+\subsubsection{Figure 3 --- Failure paths and the degradation ladder}\label{figure-3-failure-paths-and-the-degradation-ladder}}
+
+Every transition is labelled with what causes it and what the venue still accepts
+in that state. A state a previous version called REDUCE\_ONLY has been removed: a
+gateway does not accept locally-judged risk-reducing orders, because c9 shows
+that judgement is unsound across gateways.
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=0.62\linewidth]{fig4_ladder}
+\caption{Failure paths and the degradation ladder. The four edges into FENCED are the four ways this design loses authority, and all four fail closed for new risk.}
+\end{figure}
+
+The four edges into FENCED are the four ways this design loses authority, and all
+four fail closed for new risk. Risk reduction happens on the liquidation path in
+every one of them, which is the CAP position §3.3 defends and the correction that
+removed REDUCE\_ONLY.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\hypertarget{figure-4-deployment-view-target-not-built}{%
+\subsubsection{Figure 4 --- Deployment view: target, not built}\label{figure-4-deployment-view-target-not-built}}
+
+Everything measured in this document runs in a single process against an
+in-memory ordering point. \textbf{No part of this figure has been implemented or
+measured.} It is drawn because the architecture is not complete without saying
+where each component lives and what replicates it, and it is labelled because a
+diagram of unbuilt infrastructure next to measured results otherwise invites the
+reader to give both the same standing.
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=0.72\linewidth]{fig5_deployment}
+\caption{Deployment view. The target deployment; no part of it has been implemented or measured.}
+\end{figure}
+
+Three things here are load-bearing and unbuilt, and they are the three §5.7
+lists. The ordering point is replicated, and every claim about fencing, sealing
+and barriers assumes it survives a node loss without losing or reordering the
+log. The allocator has no snapshot or failover: it is the only component that
+cannot rebuild itself from the log. And the liquidator is venue infrastructure,
+which is what makes its transfers internal (§5.4) and what puts it inside the
+trusted computing base (§6.1).
+
+What the recovery evidence supports is the property replication needs --- each
+component's state is a deterministic, idempotent fold of one ordered log --- and
+not that the replication works.
+
+
+
+\label{start:3}%
+
+\hypertarget{consistency-map}{%
+\subsection{3. Consistency map}\label{consistency-map}}
+
+\hypertarget{per-flow}{%
+\subsubsection{3.1 Per flow}\label{per-flow}}
+
+One row per flow, with the model chosen and why it is survivable. The test is
+``weakest the business can survive'', not ``strongest available''.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Flow
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Model
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Defence
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Matching, per symbol & Single-writer total order & Price-time priority \emph{is} a total order; anything weaker changes which client got the fill \\
+Envelope consumption at a gateway & Local atomic within the gateway & Three integers and a vector owned by one gateway; nobody else reads them during the term \\
+Admission sequence per lease & Gap-free total order at the ordering point & It accepts only the next number for a lease. The seal, the barrier and the settlement figure all rest on the log holding every admission that lease produced \\
+Authority binding & Registry at the ordering point, holder from the authenticated session & A lease id alone is a bearer token: without the binding, knowing one is enough to submit for any account (Appendix C.3) \\
+Fill terms & Checked at the ordering point against terms recorded at admission & A fill reported by a component that could be compromised is not evidence. Band, fee cap, direction, over-fill and identity are decided there; a refused fill writes nothing \\
+Lease issuance and generation & Single allocator per account, linearisable & Two issuers could double-issue against the same equity. The one place the design cannot weaken \\
+End of authority & Fence at the ordering point, linearisable & A clock comparison is not evidence a partitioned holder has stopped; a fence is. It need not be delivered to the holder \\
+Marks into the allocator & Bounded-stale & Staleness costs capacity in both directions and, inside the grid, not safety --- for two reasons that are both needed: the add-on is reserved against \(G^{+}\), the highest gross the grid reaches, and \texttt{R} already covers the equity the account loses at any scenario in it \\
+Position feed into the allocator & Bounded-stale, eventually consistent & A fill the allocator has not seen was admitted under a lease and is inside that lease's absolute ceilings. Until a terminal ordered reconciliation it stays charged to that holder \\
+Holder occupancy & Over-approximated per holder while any is live; compacted from the log once none is & Per-holder figures are summed and do not net, which is necessary while an unreachable holder may still be acting (§5.4) \\
+Audit journal & Durable append-only, linearisable per shard & Replay must reproduce the decision exactly, which fails if entries reorder \\
+Dashboards, ledger balances, retry handling & Eventually consistent; fold of the journal; at-least-once with end-to-end idempotency & A stale capacity figure drives no decision the system will not re-check; exactly-once is not a transport property (§5.3) \\
+\end{longtable}
+
+The row worth arguing is the position feed. A stale feed cannot under-state the
+requirement, and the reason is \textbf{not} that lag produces a smaller ceiling ---
+neither the mechanism nor reliably true. It is that the ceilings are absolute
+rather than incremental and the accounting is monotone: the allocator never
+releases a holder's occupancy on the strength of not having heard from it.
+
+\hypertarget{cap-position-of-the-matching-core}{%
+\subsubsection{3.2 CAP position of the matching core}\label{cap-position-of-the-matching-core}}
+
+Unchanged from the running case: during a partition that costs the leader its
+majority, the matching core stops accepting orders rather than risk divergence.
+Halting is embarrassing; double-executing trades is existential.
+
+\hypertarget{cap-position-of-the-admission-plane}{%
+\subsubsection{3.3 CAP position of the admission plane}\label{cap-position-of-the-admission-plane}}
+
+The relevant partition is \textbf{between a gateway and the allocator, with the
+ordering point still reachable}. A gateway cut off from the ordering point
+cannot reach a book at all and is not serving in any sense.
+
+\begin{quote}
+During a gateway--allocator partition, the gateway keeps admitting inside the
+ceilings it already holds until its term ends, and then admits nothing. It does
+not fall back on a local judgement that an order reduces risk.
+\end{quote}
+
+It cannot tell a risk-reducing order from one that closes a leg whose hedge sits
+on another gateway (c9), so it does not try.
+
+\textbf{Availability is bought before the partition.} The gateway serves because its
+budget was solved to be safe on its own; the term length \emph{is} the availability
+budget, and the same number as the tightening latency of §1.5. \textbf{When the term
+ends, all order flow through that gateway stops, closing orders included.} What
+survives a partition is the venue's ability to bound its own loss, through the
+liquidator --- not the client's ability to exit. A client-facing reduce-only path
+would need the account-level check the liquidator makes, so a central component
+the gateway can reach; it is not built.
+
+\hypertarget{where-the-design-refuses-to-weaken}{%
+\subsubsection{3.4 Where the design refuses to weaken}\label{where-the-design-refuses-to-weaken}}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \textbf{One issuer per account.} Two allocators can issue two sets of ceilings
+  against the same equity; each is individually valid, so no downstream check
+  recovers.
+\item
+  \textbf{Authority ends at the ordering point, not on a clock.} If a fenced lease
+  can still admit, the seal names a count that is already wrong and every figure
+  computed from the log is computed over an incomplete one. E7's \texttt{no\_fence} arm
+  draws 7,790 on the insurance fund against 0 in the base run, takes 75
+  transfers instead of 24, and cannot settle at all.
+\item
+  \textbf{Append-only, ordered audit.} Reordering makes an admitted decision
+  unreproducible, which is the whole of what §6.4 offers a supervisor.
+\end{enumerate}
+
+Everything else is chosen at the weakest model that survives.
+
+
+
+\label{start:4}%
+
+\hypertarget{data-and-storage-design}{%
+\subsection{4. Data and storage design}\label{data-and-storage-design}}
+
+\hypertarget{engine-per-store-chosen-from-the-access-pattern}{%
+\subsubsection{4.1 Engine per store, chosen from the access pattern}\label{engine-per-store-chosen-from-the-access-pattern}}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Store
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Access pattern
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Engine
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Why not the obvious alternative
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Order books & Top ticks at 100k/s; cancel by ID O(1) & In-memory price-level array, FIFO per level, index by order ID & A tree of queues costs a cache miss per hop; at 100 µs the misses are the budget \\
+Scenario vectors and gross totals & Update per order, per (account, gateway) & Flat array, ≈ 64 MB resident & A revaluation per order is pointer-chasing at the top of book \\
+Account positions and equity & Read per issuance; written on every fill & In-memory in the allocator shard, snapshotted & A row store serialises the hot accounts, which are the market makers \\
+Log, journal and ledger entries & Sequential append at ≈ 21 MB/s (§2.7) & Append-only segments on NVMe & Nothing is updated in place \\
+Balances & Fold of the journal, materialised & In-memory hash, snapshotted with the journal offset & Balances as source of truth is the running case's anti-pattern, Part 3 §7 \\
+Historical balance-at-time-T & Rare, analytical & Columnar store fed by change data capture & Otherwise an analytical workload sits behind the trading lock \\
+Scenario grid, add-on parameters, gateway weights, band and fee policy, credit version, authority bindings & Read on every derivation and replay & Versioned data on the log, activated at a sequence & As configuration they make replay non-deterministic \\
+\end{longtable}
+
+The last row is specific to this design: those values look like configuration an
+operator would tune, and are not, because a gateway derives its ceilings and its
+refusals from them and a replay must reproduce both.
+
+\hypertarget{accounting-model}{%
+\subsubsection{4.2 Accounting model}\label{accounting-model}}
+
+Double-entry, with conservation enforced at write time: every journal entry's
+postings sum to zero per asset, so value is moved by code and never created.
+Accounts are keyed \texttt{(ownerId,\ assetId,\ accountType)} over \texttt{USER\_AVAILABLE},
+\texttt{USER\_MARGIN\_HOLD}, \texttt{USER\_UNREALISED}, \texttt{EXCHANGE\_FEE}, \texttt{INSURANCE\_FUND},
+\texttt{EXCHANGE\_HOT}, \texttt{EXCHANGE\_COLD}, \texttt{SUSPENSE}, \texttt{EXTERNAL\_SETTLEMENT}, \texttt{VENUE\_BOOK} and
+\texttt{FUNDING\_CLEARING}.
+\texttt{USER\_MARGIN\_HOLD} is the running case's \texttt{USER\_HOLD} under cross-margin: there
+the hold is per order and released when that order resolves, here it is the
+account's single encumbrance and moves with the portfolio requirement.
+Everything from \texttt{USER\_UNREALISED} onward except the wallets and \texttt{SUSPENSE} is new
+relative to a spot venue: a derivatives venue carries positions it marks every
+tick, pays funding between clients, takes positions onto its own book in a
+liquidation, and keeps a fund to absorb what an account cannot.
+
+Signs follow each account's normal balance --- user and asset accounts debit, venue
+liabilities credit --- and an entry's postings sum to zero once signs are applied.
+\texttt{EXTERNAL\_SETTLEMENT} is a clearing account: value leaving the venue reduces both
+a liability and an asset, which is two debits and does not net, so it is booked
+in two entries that each sum to zero. An earlier version wrote it as one entry
+and violated its own rule.
+
+Amounts are signed 64-bit integers in minimal units with 128-bit intermediates.
+No floats: they break determinism, which is what makes replicas agree and replays
+reproducible.
+
+\hypertarget{leases-holds-and-what-actually-follows}{%
+\subsubsection{4.3 Leases, holds, and what actually follows}\label{leases-holds-and-what-actually-follows}}
+
+\textbf{A lease is an authorisation. A hold is a posting.} A lease never appears in
+the ledger: it is capacity to create holds, issued by the allocator, consumed by
+a gateway, ending with its term. A hold moves collateral from \texttt{USER\_AVAILABLE} to
+\texttt{USER\_MARGIN\_HOLD} when a position opens. Conflating the two is how an
+authorisation becomes spendable.
+
+An earlier version chained them into
+\texttt{sum\ holds\ \textless{}=\ sum\ consumed\ leases\ \textless{}=\ sum\ issued\ leases\ \textless{}=\ collateral}. That is
+withdrawn and does not hold: orders are checked against absolute worst-fill
+envelopes rather than each consuming an additive quantity, so ``consumed leases''
+is not a sum, and a scenario requirement, a gross notional and an execution cost
+are not commensurable and do not compose into a ledger amount.
+
+What does hold is three facts that meet at the account: every posting sums to
+zero per asset, enforced at write time; an account's equity is a cash-flow fold of
+the authoritative log, rebuildable independently of any live component (a14); and
+the admission condition of §2.2 keeps the requirement inside \emph{that} equity after any
+move the grid covers.
+
+They do not compose into a proof that venue assets exceed liabilities: that needs
+the ledger implemented, the insurance fund sized against moves outside the grid
+(§5.4 argues a size from one stress run; it is not a calibration), and the venue
+book's own risk bounded.
+
+\hypertarget{the-order-lifecycle-as-journal-entries}{%
+\subsubsection{4.4 The order lifecycle as journal entries}\label{the-order-lifecycle-as-journal-entries}}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Event
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Postings
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Order admitted & None. Admission consumes a budget, which is not money \\
+Position opened by a fill & \texttt{USER\_AVAILABLE\ -x} / \texttt{USER\_MARGIN\_HOLD\ +x}; fee \texttt{USER\_AVAILABLE\ -f} / \texttt{EXCHANGE\_FEE\ +f} \\
+Mark-to-market (unrealised PnL) & \texttt{USER\_UNREALISED\ ±u} against the counterparty's \texttt{USER\_UNREALISED\ ∓u}; the two sides sum to zero \\
+Position reduced (realised PnL) & the matching \texttt{USER\_UNREALISED} is moved into \texttt{USER\_AVAILABLE}; \texttt{USER\_MARGIN\_HOLD\ -x} / \texttt{USER\_AVAILABLE\ +x} for the released margin \\
+Funding, each interval & payers \texttt{USER\_AVAILABLE\ -p} / \texttt{FUNDING\_CLEARING\ +p}; receivers \texttt{FUNDING\_CLEARING\ -p} / \texttt{USER\_AVAILABLE\ +p}; the clearing account is zero after every interval, so the venue is not a party \\
+Liquidation basket & the position moves to \texttt{VENUE\_BOOK} at the basket price, one entry per basket; a negative ending equity is covered \texttt{INSURANCE\_FUND\ -d} / \texttt{USER\_AVAILABLE\ +d}, bringing the account to zero \\
+ADL & when the fund would fall below its floor, the uncovered amount is taken from opposing profitable positions: their \texttt{USER\_UNREALISED} is realised at the bankruptcy price and the difference posted to the defaulted account, one entry per event \\
+Withdrawal requested & \texttt{USER\_AVAILABLE\ -x} / \texttt{SUSPENSE\ +x}, after the sequence in §6.2 \\
+Withdrawal confirmed & \texttt{SUSPENSE\ -x} / \texttt{EXTERNAL\_SETTLEMENT\ +x}, and \texttt{EXTERNAL\_SETTLEMENT\ -x} / \texttt{EXCHANGE\_HOT\ -x} when the chain confirms \\
+\end{longtable}
+
+The funding interval, the rate formula and the ADL ranking are venue policy and
+are not specified here.
+
+The first row is the one that matters: admission moves nothing, which is what
+lets it run at gateway speed, and why the envelope bound has to be sound --- it is
+the only thing between an admitted order and an over-committed balance.
+
+A withdrawal reduces equity, so capacity outstanding against the old figure has
+to stop before funds leave: \textbf{fence, reconcile, re-issue against the reduced
+equity, release}. Bumping the generation is not sufficient --- a partitioned
+gateway keeps admitting inside its term regardless. §6.2 gives the slower
+alternative.
+
+\hypertarget{write-path-idempotency-and-reconciliation}{%
+\subsubsection{4.5 Write path, idempotency and reconciliation}\label{write-path-idempotency-and-reconciliation}}
+
+Entry IDs are a hash of the trade sequence and leg index, so a replayed trade
+deduplicates. Assert-then-apply is atomic over the accounts touched; the ledger
+is a single-writer partition per asset class; negative balance is a write-time
+assertion. Reconciliation runs continuously: balances recomputed from the journal
+against the materialised view, sequence-range checks for gaps and duplicates, hot
+and cold mirrors against chain balances, and every account rebuilt from the log
+against the live ledger --- which catches divergence between §4.3's two folds.
+
+The ledger module is specified here and not implemented in the simulator, which
+models the envelope and account sides only: §4.3's three facts are established
+for the account, and NFR row 11's venue-level statement is an argument, not a
+checked property.
+
+
+
+\label{start:5}%
+
+\hypertarget{failure-and-recovery}{%
+\subsection{5. Failure and recovery}\label{failure-and-recovery}}
+
+\hypertarget{what-has-to-survive-a-node-loss}{%
+\subsubsection{5.1 What has to survive a node loss}\label{what-has-to-survive-a-node-loss}}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+State
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Owner
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Size at the scale of §1.1
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Rebuilt from
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Order books & Matching shard & ≈ 160 MB per shard at 8 shards & Snapshot plus log tail \\
+Per-account positions, equity, ceilings, generation & Allocator shard & ≈ 27 MB total & Snapshot plus log tail. \textbf{Not implemented} (§5.7) \\
+Per-(account, gateway) scenario vectors and gross totals & Gateway & ≈ 64 MB total & Derived; not snapshotted \\
+Balances & Ledger & ≈ 100 MB & Journal fold \\
+\end{longtable}
+
+The scenario vectors are a cache of a pure function of the order state, so they
+are rebuilt rather than restored: reconstructing 128 bytes from a handful of
+orders is faster than reading it from disk, and snapshotting them would double
+the snapshot and buy nothing.
+
+\hypertarget{what-must-be-on-the-replicated-log}{%
+\subsubsection{5.2 What must be on the replicated log}\label{what-must-be-on-the-replicated-log}}
+
+§2.7 lists what an admission decision's replayability puts on the log and why the
+ceilings are derived rather than logged. The requirement is stronger than the
+running case's because three components must reconstruct the same facts without
+reaching each other, and two consequences carry into the rest of this section:
+\textbf{a snapshot bounds replay time and is never a correctness requirement}, and
+\textbf{replay is idempotent by log position} rather than by order ID --- which covers
+admissions but not fills or cancels, and r2 caught that.
+
+\hypertarget{the-idempotency-chain}{%
+\subsubsection{5.3 The idempotency chain}\label{the-idempotency-chain}}
+
+The full nine-step chain is Appendix C.1. Its shape:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{the client} retries on the same client order ID; a timeout is an unknown
+  outcome, not a failure;
+\item
+  \textbf{the gateway} submits under \texttt{(lease\_id,\ admission\_seq)}, and the ordering
+  point takes only the next number for that lease, so the recorded sequence is
+  gap-free --- which is what later lets a seal cover every admission;
+\item
+  \textbf{the ordering point decides first.} Only a fill it accepted is folded into
+  the gateway and the account; an earlier implementation called the gateway first
+  and moved state the authority then refused;
+\item
+  \textbf{a fill} is refused, writing nothing, on a reused identifier with different
+  figures, an unknown or cancelled order, the wrong direction, an over-fill, a
+  price outside the recorded band, or a fee above the cap; \textbf{a basket} is one
+  record under one identifier, idempotent on retry; \textbf{the matching shard}
+  applies a client order ID at most once.
+\end{itemize}
+
+Two costs stated rather than hidden. A retry routed through another gateway is a
+new admission attempt there and may consume envelope, released at the next
+issuance. And a cancel \emph{request} releases nothing; only an acknowledgement
+recorded at the ordering point does, which produces the two failures below.
+
+\hypertarget{fencing-liquidation-and-settlement}{%
+\subsubsection{5.4 Fencing, liquidation and settlement}\label{fencing-liquidation-and-settlement}}
+
+An account cannot reach a requirement above its equity through any move the grid
+covers; that is what the closure reserves for. \textbf{A liquidation is therefore an
+event outside the model, the credit event has already happened by the time anyone
+sees it, and the mechanism is limiting a loss rather than preventing a
+violation.} What it limits is the draw on the insurance fund once the account's
+own equity is gone.
+
+\hypertarget{three-things-stop-in-three-places}{%
+\paragraph{Three things stop, in three places}\label{three-things-stop-in-three-places}}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+What
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Where
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Cost
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+New admissions & a fence at the ordering point & one write; no gateway need be reachable \\
+Resting orders filling & a cancel acknowledged at the ordering point & a round trip per order, and it can fail \\
+The position moving & trading it out & as long as the unwind takes \\
+\end{longtable}
+
+\hypertarget{the-unwind-is-an-internal-transfer}{%
+\paragraph{The unwind is an internal transfer}\label{the-unwind-is-an-internal-transfer}}
+
+Reducing one leg at a time does not work: on a hedged book, closing one leg while
+its offset stays put raises the account's requirement --- c9 with the liquidator in
+the gateway's place. l3 measures the requirement going 0 → 2,000 on a single-leg
+proposal and staying at 0 on a proportional basket.
+
+That forces a basket, and matching is sharded by symbol, so \textbf{a basket spanning
+several symbols cannot fill atomically across several books}; a partial fill on
+one shard with none on another leaves the account somewhere the check never
+approved. This design does not assume an atomicity the matching path lacks and
+does not route baskets through it. The liquidator prices the whole basket against
+the venue's own marks, inside the same band and fee cap an ordinary fill is held
+to, and the ordering point commits it as one record: either the record is there
+and the whole basket happened, or none of it did.
+
+\textbf{The cost is that the venue is the counterparty.} Risk moves to the venue's own
+book and, past the account's equity, to the insurance fund. What limits that is
+below, under the waterfall.
+
+\hypertarget{two-ways-a-cancel-fails}{%
+\paragraph{Two ways a cancel fails}\label{two-ways-a-cancel-fails}}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Failure
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+What the log holds
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+What the settlement must do
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Acknowledgement recorded, notification to the gateway lost & the cancel & release the order; only the local view is stale \\
+Matching side never confirmed & nothing & keep the worst-fill reservation and the execution-cost reserve \\
+\end{longtable}
+
+Fencing does not help in the second case: it stops new admissions and does
+nothing to a resting order. Both arms of E7 show one order live at the end; the
+settlement figure is \texttt{(0,\ 0,\ 0)} for the recorded cancel and \texttt{(120,\ 2232,\ 9)} for
+the unacknowledged one.
+
+\hypertarget{releasing-capacity-afterwards}{%
+\paragraph{Releasing capacity afterwards}\label{releasing-capacity-afterwards}}
+
+\textbf{A seal releases one lease; a globally fenced, ordered account barrier releases
+the whole account.} Neither takes a holder's word or a clock: both read the log.
+The barrier has six preconditions, none supplied by the caller (Appendix C.2);
+E7 refuses it while any lease --- including the liquidator's --- is live.
+
+\hypertarget{what-the-delay-costs}{%
+\paragraph{What the delay costs}\label{what-the-delay-costs}}
+
+E6 splits the equity change exactly --- ending equity = trigger equity + drift −
+slippage − fees, asserted on integers with no tolerance. Across its delay sweep
+execution cost runs 2,522 → 6,486 while market drift runs 16,444 → 229,708. \textbf{What
+the mechanism controls --- new admissions and the cost of unwinding --- is bounded;
+market drift is not.} Without a fence the unwind's cost exceeds its bound by
+1,562. E6's figures are one configuration, one seed, one price path.
+
+\hypertarget{below-the-unwind-venue-book-insurance-fund-adl}{%
+\paragraph{Below the unwind: venue book, insurance fund, ADL}\label{below-the-unwind-venue-book-insurance-fund-adl}}
+
+Designed, not built. Each layer is a decision with a price.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Layer
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Decision
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+What it costs
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Venue book & The venue's own book is margined like an account, against capital the venue allocates to it. It unwinds through ordinary matching, one symbol at a time, with a cap on its share of each book's volume & Slow exits in a thin market. A transfer that would take the book over its limit is not taken; that part goes straight to the next layer \\
+Insurance fund & Covers an account's negative ending equity, from the E6 identity. Sized to cover the combined shortfall of the largest accounts under stress moves beyond the scenario set, plus a floor it may not be drawn below & Capital held idle. How many accounts and which stress moves are policy; we give the method and one run, not a calibration \\
+ADL & When a draw would take the fund below its floor, the rest is taken from opposing profitable positions at the bankruptcy price, one record per event & Profitable clients lose part of a position they did not choose to close. It is the last resort because it is the only layer that touches clients who did nothing wrong \\
+\end{longtable}
+
+\hypertarget{a-flash-crash-e9}{%
+\paragraph{A flash crash (E9)}\label{a-flash-crash-e9}}
+
+Session 3's flash-crash tabletop gives the shape --- a fall past anything the risk
+model covers, a symbol breaker, a halt and an auction reopen, liquidation under
+stress. It does not give magnitudes, so E9 picks its own and runs the same
+distance, 3.4 widest scenario steps, twice: as a \textbf{gap} over three ticks and as
+a \textbf{slide} over ten. Five long accounts with 950,000 of collateral between them,
+a fund of 100,000 and a floor of 20,000. Two reopen prices are run, because the
+value of a halt depends on where the auction clears and the run cannot know that.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Crash
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Breaker, auction recovers 60\%
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Breaker, auction at the low
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+No breaker
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Gap, 3 ticks & no liquidation, no draw & draw 214,848; fund to floor; \textbf{ADL 134,848} & draw 214,848; ADL 134,848 \\
+Slide, 10 ticks & no liquidation, no draw & draw 214,856; ADL 134,856 & liquidation keeps up; \textbf{no draw} \\
+\end{longtable}
+
+Three readings. Against a \textbf{gap}, liquidation cannot help: prices jump past the
+point where equity runs out between two chances to act, and only a recovering
+auction saves the fund. Against a \textbf{slide}, liquidation alone keeps up --- and a
+breaker that halts early and reopens at the low makes it \emph{worse}, because a halt
+stops the liquidator too. So \textbf{a breaker is a bet on the reopen price}, and its
+threshold should sit where gradual liquidation stops keeping up, not at the first
+sign of a move. And in this configuration a fund of about 235,000 --- a quarter of
+the collateral --- would have avoided ADL in every arm; that is one run's figure,
+not a sizing rule. The E6 identity holds in every liquidated account.
+
+What E9 does not model: market-data conflation, reconnect storms and gateway
+overload during the crash, which are load problems in front of the design rather
+than inside it.
+
+\hypertarget{recovery-time-arithmetic}{%
+\subsubsection{5.5 Recovery-time arithmetic}\label{recovery-time-arithmetic}}
+
+State is not one snapshot: the tiers of Figure 4 fail independently and are
+sized separately.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Tier
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Snapshot
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Log tail over 5 min
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Conclusion
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Matching shard & ≈ 160 MB (one shard of eight) & orders and fills for that shard's symbols & Dominated by the snapshot read, then replay \\
+Allocator shard & ≈ 27 MB total across sixteen shards & lease inputs, ≈ 8 MB/s & Small enough that replay dominates \\
+Gateway & none --- its state is derived (§5.1) & admissions, fills, cancels for its own lease & Rebuild is pure replay \\
+\end{longtable}
+
+The one figure that can be checked from this document is the replay volume:
+
+\begin{verbatim}
+5 min at ≈ 21 MB/s (§2.7) = 6.3 GB;
+at an assumed 10x live replay rate, the log tail takes about 30 s,
+excluding snapshot fetch and leader election.
+\end{verbatim}
+
+Two caveats the arithmetic does not carry: 21 MB/s is a lower bound, counting
+order commands and lease inputs but not fills, cancels, fences, baskets, framing
+or any replication factor; and the 10× replay rate is \textbf{assumed}, not measured
+(§8.1).
+
+\textbf{Warm failover is a design target, not a result.} Neither replication nor
+leader election is implemented (§5.7). What \emph{is} established is the property
+failover needs: E4's 3,642 injected crashes show snapshot plus replay reproducing
+the state the whole log implies, zero equivalence failures, including 2,364
+mid-partial-fill and 819 stale-snapshot cases.
+
+\textbf{When an allocator shard fails over, outstanding leases and terms} (designed,
+not built):
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  Leases already issued stay valid until their term ends. Gateways keep
+  admitting inside them; nothing about a failover makes an issued budget unsafe.
+\item
+  The exposure those leases created stays charged to its holders. The new leader
+  rebuilds occupancy per holder from the log, as the barrier does, and never from
+  what a gateway reports.
+\item
+  Before issuing anything, the new leader commits an \textbf{epoch fence} at the
+  ordering point: registrations from an older epoch are refused. A deposed leader
+  that is still running cannot mint a lease, so there is still one issuer per
+  account. Admissions under already-registered leases are not refused.
+\item
+  It then issues a new generation for every account on the shard.
+\end{enumerate}
+
+The arithmetic, per account on the failed shard:
+
+\begin{verbatim}
+no-ingress window  ≈  election + catch-up + one issuance − remaining term
+cold rebuild: 5 min of lease inputs at an assumed 10x replay ≈ 30 s
+hot follower applying the log continuously: catch-up ≈ replication lag
+\end{verbatim}
+
+Row 8's three seconds is reachable only with hot followers; a cold rebuild
+misses it by an order of magnitude. And because a term (50--200 ms) is shorter
+than any failover, \textbf{the accounts on that shard --- one in sixteen --- lose order
+entry for up to the failover time.} Avoiding that means terms longer than a
+failover, which makes a credit cut under partition take seconds instead of
+milliseconds. We keep the short term and accept the gap: stopping order entry
+for 3 s on a sixteenth of accounts is cheaper than letting a cut credit line keep
+trading for 3 s.
+
+\hypertarget{zero-downtime-upgrade}{%
+\subsubsection{5.6 Zero-downtime upgrade}\label{zero-downtime-upgrade}}
+
+Anything a decision is derived from is versioned data on the log, activated at a
+sequence (§4.1), so a replay uses the values in force then. Upgrades are rolling
+with the state machine version pinned per record, and an operator cannot tune a
+derivation mid-session --- a real operational loss, and the price of NFR row 10.
+
+\hypertarget{what-is-not-covered-here}{%
+\subsubsection{5.7 What is not covered here}\label{what-is-not-covered-here}}
+
+\textbf{This is a deterministic simulator, not a deployment.} Everything measured runs
+in one process against an in-memory ordering point. A replicated ordering point,
+allocator high availability, leader election and real distributed deployment are
+\emph{designed} and \emph{not built} (Figure 4); the recovery results establish the
+property replication would need, not that replication works. The allocator alone
+cannot rebuild itself from the log, and that is not implemented either.
+
+The waterfall below the unwind, the allocator failover protocol and the
+mark-price pipeline are designed and not built; E9 exercises the waterfall's
+arithmetic in simulation. The replay rate of §5.5 is assumed, and cross-datacentre
+replication is not covered.
+
+
+
+\label{start:6}%
+
+\hypertarget{security-and-threat-model}{%
+\subsection{6. Security and threat model}\label{security-and-threat-model}}
+
+\hypertarget{trust-boundaries-and-the-trusted-computing-base}{%
+\subsubsection{6.1 Trust boundaries and the trusted computing base}\label{trust-boundaries-and-the-trusted-computing-base}}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Boundary
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+If the far side is fully compromised
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Client $\leftrightarrow$ gateway & The account's own ceilings. Ceilings are per account, so one client cannot consume another's \\
+Gateway $\leftrightarrow$ ordering point & \textbf{Inside the trusted computing base.} See below \\
+Ordering point $\leftrightarrow$ everything & Total. Every safety claim rests on it \\
+Liquidator $\leftrightarrow$ ordering point & The account it is liquidating, in full \\
+Market data $\leftrightarrow$ allocator & How much capacity is solved for. Not the admission check itself \\
+Allocator $\leftrightarrow$ gateway & An account's whole capacity \\
+Chain $\leftrightarrow$ custody & Venue assets. Unchanged from the running case \\
+Operator $\leftrightarrow$ ledger & Nothing; no write path. Detection is reconciliation, not prevention \\
+\end{longtable}
+
+\textbf{The gateway is inside the trusted computing base.} An earlier version of this
+document claimed its blast radius is bounded by the leases it holds. That is
+withdrawn. Nothing downstream re-derives the envelopes: the ordering point checks
+that an admission is the next number for a live, correctly bound lease and that a
+fill matches the terms recorded at admission; it does not recompute the
+worst-fill figures the gateway compared against its ceilings. \textbf{A gateway that
+lies about its own envelope arithmetic is believed.}
+
+What a compromised gateway cannot do --- each pinned by a test:
+
+\begin{itemize}
+\tightlist
+\item
+  act under a fenced lease, or under a lease id the allocator never minted (t3,
+  t4);
+\item
+  use another account's lease, or another holder's, or submit with no
+  authenticated session (t1, t2);
+\item
+  commit a liquidation basket under an ingress lease (t5);
+\item
+  fill outside the band or above the fee cap recorded at admission, fill in the
+  wrong direction, over-fill, or land the same fill twice (d4--d6);
+\item
+  hide an admission, because the ordering point takes only the next sequence
+  number for its lease.
+\end{itemize}
+
+What it can do, stated without softening: \textbf{a compromised gateway is bounded by
+neither its ceilings nor its own term.} It can submit arbitrary quantity for
+every account whose lease it holds, and it will not stop at its expiry, because
+the ordering point does not enforce terms --- it has no clock it can compare
+against an expiry set elsewhere (ADR-6). A term bounds an \emph{honest} gateway that
+has lost contact. The only thing that stops a dishonest one is a fence
+committing at the ordering point.
+
+So the mechanism bounds the \textbf{scope} of the damage --- which accounts, which
+authority kind, which holder --- and does not bound its \textbf{magnitude}. The exposure
+window is detection latency plus fence-commit latency, and nothing in this
+document measures either. Closing this would mean re-deriving
+the envelopes at the ordering point, which puts the per-order margin computation
+back on the single-writer path --- the thing §2.2 exists to avoid. That trade is
+not made here; it is the residual.
+
+\textbf{The liquidator is inside it too, on its own account.} Its orders are checked
+against the merged account rather than a ceiling (c9), so no ceiling bounds it.
+The non-increase test bounds the \emph{risk} it creates --- neither merged envelope may
+rise --- but permits unlimited churn, and churn costs execution. Its authority ends
+at the ordering point like any other's, and the barrier refuses to run while it
+is live (t5, l11): containment of duration, not of authority.
+
+\textbf{The market-data path} carries no authority in the running case. Here marks set
+equity, the scenario displacements and \(G^{+}\), so a wrong value changes how much
+capacity is solved for --- weaker than an earlier draft claimed, since the
+admission check reads no market state, but it is the exposure in §6.3 A1.
+
+\hypertarget{who-can-move-money}{%
+\subsubsection{6.2 Who can move money}\label{who-can-move-money}}
+
+Three ways, none of them the margin path: a trade, journalled by clearing; a
+deposit or withdrawal, frozen then reviewed then gated then signed once per
+withdrawal ID; and a liquidation or insurance-fund draw, journalled like any
+other posting. No component writes a balance.
+
+A withdrawal reduces equity, so outstanding capacity against the old figure must
+stop before funds leave. Two orderings work and differ in latency, not safety:
+fence, reconcile, re-issue, release --- immediate, at the cost of a fence round
+trip; or wait for the terms to end, then re-issue and release --- free, binds
+within the term. Releasing first is not available.
+
+\hypertarget{business-logic-abuse-cases}{%
+\subsubsection{6.3 Business-logic abuse cases}\label{business-logic-abuse-cases}}
+
+\hypertarget{a1-overstating-equity}{%
+\paragraph{A1 --- Overstating equity}\label{a1-overstating-equity}}
+
+Every ceiling is solved against \(E_0\), and nothing downstream re-derives it. An
+account reporting more equity than it has buys a ceiling it cannot carry.
+
+E5 measures it. An account that forgets a realised loss reports 92,000 where it
+has 42,000, is issued 46,000 instead of 21,000, admits 230 orders instead of 105,
+and ends 4,000 above equity. At the binding point the breach tracks the
+overstatement approximately one for one, subject to lot rounding: overstating by
+10,000 produces a breach of 10,000, while 1,000 produces 800, because the ceiling
+cannot move until the overstatement buys a whole lot of requirement.
+\textbf{The factor of two is a closure, not a margin against a misreported account};
+an earlier draft that read it as a 64\% tolerance was reading unused workload
+slack.
+
+The exposure is to anything that moves \(E_0\): a suppressed mark, a lost fee, a
+realised loss not yet folded in. The defences are §4.3's cash-flow identity, the
+account being an independently rebuildable fold of the log, and multi-sourced
+marks. None is a proof; a compromised equity path is a compromised mechanism.
+
+\hypertarget{a2-routing-to-concentrate-an-accounts-flow}{%
+\paragraph{A2 --- Routing to concentrate an account's flow}\label{a2-routing-to-concentrate-an-accounts-flow}}
+
+A gateway gets no credit for offsets held on other gateways, so a client who can
+steer hedged legs onto one gateway --- by picking it, or retrying until it lands
+there --- gets more usable capacity than one who cannot. A \textbf{fairness} problem,
+not a solvency one: the requirement stays bounded. Account affinity would narrow
+it; not built.
+
+\hypertarget{a3-stalling-a-liquidation}{%
+\paragraph{A3 --- Stalling a liquidation}\label{a3-stalling-a-liquidation}}
+
+Orders whose cancels the matching side never acknowledges keep the account
+fenced indefinitely: the settlement reserves for them (l13). The venue's exposure
+is bounded by that reservation, but the account cannot be closed out. Detection
+is §8.2's fenced-but-not-settled alert; there is no mitigation. Fee-cap gaming
+through many small fills is bounded by the per-lot cap (d4).
+
+\hypertarget{regulatory-posture}{%
+\subsubsection{6.4 Regulatory posture}\label{regulatory-posture}}
+
+A supervisor gets \textbf{reproducibility of what was admitted}: every admission is on
+the log with its lease, holder and terms, and the values it was derived from are
+versioned there (§4.1), so a three-month-old decision can be recomputed. Not yet
+for a \textbf{refusal}: a gateway's refusal reaches no log (NFR row 10). And not a
+guarantee that clients can always exit (§3.3) --- a supervisor asking should be
+told no.
+
+\hypertarget{detection}{%
+\subsubsection{6.5 Detection}\label{detection}}
+
+Six signals, all paged on and listed in §8.2: equity divergence between what the
+allocator solved against and what a rebuild from the log implies; ceilings
+summing above the solve; a gateway's figures above its ceilings; a lease fenced
+but not settled beyond a bound; mark divergence across sources; and any
+authority-binding refusal, which should be zero. The gap this list cannot close
+is §6.1's: nothing detects a gateway that lies about arithmetic nobody
+re-derives, until the account's own figures move.
+
+
+
+\label{start:7}%
+
+\hypertarget{trade-offs-and-alternatives}{%
+\subsection{7. Trade-offs and alternatives}\label{trade-offs-and-alternatives}}
+
+Each decision with the alternatives considered and the reason each lost. Where a
+number decided it, the number is given. The reversals are summarised here and
+recorded in full in Appendix A.
+
+\hypertarget{adr-1-how-the-account-level-invariant-is-enforced-pre-trade}{%
+\subsubsection{ADR-1 --- How the account-level invariant is enforced pre-trade}\label{adr-1-how-the-account-level-invariant-is-enforced-pre-trade}}
+
+\textbf{Decision.} Divide the account's capacity into per-gateway ceilings checked
+locally against absolute figures.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Alternative
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Why it lost
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Lock the account for the check & The only \emph{exactly} correct option --- full offset, no conservatism --- and it puts the running case's fee-account hot-row problem (Part 3 §4) on every order. Market-maker accounts are the hottest objects in the venue \\
+Fixed per-gateway sub-limits, no offset & Safe, trivial, and it deletes the product. The value forgone is exactly the sub-additivity gap \(\sum_g R(P_g)-R(P)\) taken to its maximum \\
+Admit optimistically, repair after & Violates the rule that a balance never goes negative. A venue proving assets ≥ liabilities at any instant cannot have a window where the proof is pending \\
+\end{longtable}
+
+\textbf{Cost.} A gateway gets no credit for offsets held elsewhere, so the account is
+charged the sub-additivity gap. §6.3 A3 records the routing distortion that
+creates.
+
+\hypertarget{adr-2-flat-ceiling-for-the-term-or-a-schedule-over-market-states}{%
+\subsubsection{ADR-2 --- Flat ceiling for the term, or a schedule over market states}\label{adr-2-flat-ceiling-for-the-term-or-a-schedule-over-market-states}}
+
+\textbf{Decision.} A flat ceiling. \textbf{This reverses an earlier decision}, and the reason is short: a lease cannot
+remove a position it has already admitted, so capacity that shrinks with the
+market restricts the \emph{next} admission and does nothing about the exposure already
+created. A flat ceiling at the solved level is equally safe and admits at least
+as many orders as any decaying one with the same start. The figures that argued
+otherwise came from a mechanism that charged the increment rather than the
+absolute envelope (c1), and are withdrawn with it. Appendix A.1 has the full
+reversal; Appendix A.2 keeps the abuse cases the schedule created.
+
+\textbf{What survives.} A gateway evaluating a shrinking curve can notice locally, on
+a market-state tick with no order present, that its consumption is higher than
+the venue would like. That is a trigger, not a capacity mechanism, and its value
+is unmeasured.
+
+\hypertarget{adr-3-where-size-is-measured}{%
+\subsubsection{ADR-3 --- Where size is measured}\label{adr-3-where-size-is-measured}}
+
+\textbf{Decision.} Reserve size at the highest price the scenario set reaches, not at
+today's price. \textbf{Alternative lost} on m1: 296 lots admitted, 382,143 over equity
+after the move, against 249 lots and 5,842 inside. \textbf{Cost:} about 16\% of
+capacity. With one factor the reserve is tight to a minor unit per lot; with
+several factors it stays safe but is loose (m4b: 24,000 against 20,000; E8: up to
+8\%).
+
+\hypertarget{adr-4-what-goes-on-the-replicated-log}{%
+\subsubsection{ADR-4 --- What goes on the replicated log}\label{adr-4-what-goes-on-the-replicated-log}}
+
+\textbf{Decision.} The lease inputs, one record per changed account per issuance; each
+gateway derives its own budgets. \textbf{Alternative lost} on bandwidth: logging the
+budgets costs ≈ 32 MB/s against an order stream of ≈ 12.8 MB/s; the inputs are ≈
+8 MB/s. \textbf{Cost:} everything in the derivation is versioned data (§4.1) and
+cannot be tuned mid-session.
+
+\hypertarget{adr-5-how-the-allocator-is-partitioned}{%
+\subsubsection{ADR-5 --- How the allocator is partitioned}\label{adr-5-how-the-allocator-is-partitioned}}
+
+\textbf{Decision.} By account, sixteen shards. \textbf{Alternative lost:} by symbol, like
+matching, would need several shards to combine partial views of one account ---
+the coordination the design exists to remove.
+
+\hypertarget{adr-6-what-ends-a-holders-authority}{%
+\subsubsection{ADR-6 --- What ends a holder's authority}\label{adr-6-what-ends-a-holders-authority}}
+
+\textbf{Decision.} A fence at the ordering point, with the term as the fallback, and
+each lease bound to an account, a holder and a kind.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Alternative
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Why it lost
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Compare the order's generation with the lease's & a stale gateway and a stale order agree with each other \\
+The allocator's clock against the expiry & a partitioned gateway's clock may be behind (c11) \\
+The holder reports it has stopped & the defect that kept recurring until release read the log itself \\
+The lease id as the authority & a bearer token: any account, any holder (t1) \\
+\end{longtable}
+
+\textbf{Cost.} The ordering point has no clock, so it does not enforce terms: an
+honest gateway is bounded by its term, a compromised one only by the fence
+(§6.1).
+
+\hypertarget{what-the-counterexamples-forced}{%
+\subsubsection{What the counterexamples forced}\label{what-the-counterexamples-forced}}
+
+Every row is a failing test written first, then a design change. Detail is in
+Appendix A; the tests are in \texttt{tests/}.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Counterexample
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+What broke
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Design change it forced
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+c1 & charging an order its increment: a leg flipped from short to long left the increment unchanged while the requirement hit its maximum & gateways check absolute worst-fill figures \\
+c9 & a gateway accepting ``risk-reducing'' orders during a partition: closing one leg raised the account's requirement because the hedge sat on another gateway & a cut-off gateway admits nothing; only the liquidator, with the merged account, reduces risk \\
+m1 & size reserved at today's price: 296 lots, ending 382,143 over equity after the move & size reserved at the highest price in the scenario set: 249 lots, inside by 5,842 \\
+l3 & unwinding one leg at a time: requirement 0 → 2,000 & proportional basket, committed as one record, venue as counterparty \\
+c8, c11, c12 & exposure released on expiry, on a clock, or on the holder's own report & only a seal or an account-wide barrier releases exposure \\
+t1 & a valid lease id under another account returned success & the ordering point binds each lease to account, holder and kind \\
+r2 & replay de-duplicated by order id applied fills twice & replay is idempotent by log position \\
+d7 & capacity shrank every term & the cost budget carries cost already incurred but not yet in equity \\
+E5 Part B & reading the factor of two as a 64\% tolerance for misreported equity & the two is a closure; at the binding point a breach tracks an overstatement one for one \\
+ADR-2 & a budget that shrinks as the market moves, claimed as a safety mechanism & a flat budget per term; the schedule survives only as a local trigger \\
+\end{longtable}
+
+\hypertarget{what-we-deliberately-did-not-build}{%
+\subsubsection{What we deliberately did not build}\label{what-we-deliberately-did-not-build}}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{The waterfall, the mark-price pipeline and allocator failover} are designed
+  (§5.4, §2.5, §5.5) and not built. E9 runs the waterfall's arithmetic.
+\item
+  \textbf{A client-facing reduce-only path.} §3.3 says why, and what it costs.
+\item
+  \textbf{Replication of the ordering point.} Figure 4 draws the target deployment and
+  labels it unbuilt.
+\item
+  \textbf{Anything that identifies the agent behind an order.} The mechanism is
+  capacity control, not surveillance.
+\end{itemize}
+
+
+
+\label{start:8}%
+
+\hypertarget{operations}{%
+\subsection{8. Operations}\label{operations}}
+
+\hypertarget{the-first-chaos-experiments}{%
+\subsubsection{8.1 The first chaos experiments}\label{the-first-chaos-experiments}}
+
+\textbf{Measure the replay rate}, because §5.5 assumes it at ten times live and
+nothing else in that arithmetic is assumed. Cold-start a node from a snapshot
+plus five minutes of log, time the rebuild, and compare the state hash against
+the live node --- the comparison E4 makes 3,642 times. At or above 10× the
+five-minute snapshot cadence stands; at 2× it tightens to about a minute and
+nothing else moves, because a snapshot bounds replay time rather than
+correctness.
+
+\textbf{Second: partition a gateway from the allocator while it stays connected to the
+ordering point}, and hold it past its term. This is the failure §3.3 is about.
+What should be observable is the gateway admitting inside its ceilings until the
+term ends and then admitting nothing at all, closing orders included.
+Partitioning a gateway from the \emph{ordering point} tests nothing about margin: no
+order reaches a book at all.
+
+\textbf{Third: fence an account's leases without telling any gateway} and confirm the
+ordering point refuses what follows. E7 counts 50 refusals in simulation; in a
+deployment this checks that the fence is a real serialisation point.
+
+\hypertarget{alerts-business-invariants-first}{%
+\subsubsection{8.2 Alerts, business invariants first}\label{alerts-business-invariants-first}}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \textbf{Sum of issued ceilings above what the condition solved for.} An arithmetic
+  impossibility if the allocator is correct, so firing means it is wrong.
+\item
+  \textbf{A gateway's worst-fill figures above the ceilings it holds.} Same class.
+\item
+  \textbf{Requirement above equity outside a liquidation window.} The invariant the
+  design exists to hold.
+\item
+  \textbf{Equity divergence} between what the allocator solved against and what a
+  rebuild from the log implies, and \textbf{mark divergence} across sources. §6.3 A1
+  is the reason both page rather than sit on a dashboard.
+\item
+  \textbf{A lease fenced but not settled beyond a bound}, and any \textbf{authority-binding
+  refusal}. The first is a stuck liquidation holding capacity; the second
+  should be zero in normal operation and otherwise means a component is
+  submitting under a lease that is not its own.
+\end{enumerate}
+
+Alerts 1 to 3 are the invariants the simulator checks after every admitted order,
+promoted to production: the same predicate gates a test run and the live system,
+so a production failure is expressible as a failing test case. Latency
+percentiles, queue depths and replica lag are diagnostics and do not page.
+
+\hypertarget{volatility-day-playbook}{%
+\subsubsection{8.3 Volatility-day playbook}\label{volatility-day-playbook}}
+
+\textbf{Before.} Pre-scale gateways; the matching core is partitioned, not elastic.
+Confirm every mark source is live and independent. Decide the term for the
+session: it is the tightening latency the venue accepts under partition (§1.5),
+trading availability against how fast a credit decision binds.
+
+\textbf{During.} Nothing to tune. A tightening is a re-issue against lower equity,
+binding at the next issuance for reachable gateways and within the term for
+unreachable ones. To bind faster, fence the affected leases.
+
+\textbf{Liquidation} is venue-initiated. The operator decides when to trigger, how
+aggressively to unwind, and whether to accept a stall: the unwind halves its
+basket fraction on a failed check and stops at one lot rather than forcing a
+reduction that would raise the requirement. A stall is a signal to widen the
+basket, not to push.
+
+\textbf{Halt and reopen.} Cancels accepted, no new orders. On reopen, ceilings are
+re-issued against post-auction marks before order entry resumes, because the
+auction can move equity by more than the grid covers.
+
+\textbf{After.} Reconcile per §4.5, and confirm every account that entered liquidation
+reached a barrier: fenced but never settled is the state that silently costs
+capacity.
+
+\hypertarget{what-operations-cannot-do}{%
+\subsubsection{8.4 What operations cannot do}\label{what-operations-cannot-do}}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Grant capacity by hand.} It comes from the condition of §2.2 or not at all.
+\item
+  \textbf{Recall a lease from an unreachable gateway.} Fencing stops what it can still
+  do; it does not remove what it already did.
+\item
+  \textbf{Release an account's occupancy without a barrier} --- not by clock, not by a
+  holder's report, not by an operator's judgement that the holder is gone.
+\item
+  \textbf{Write to the ledger.} Corrections are journalled, dual-approved commands.
+\end{itemize}
+
+The middle two look like an operator denied a manual override mid-incident. Both
+were tried and produced c8, c11 and c12: an operator who can declare a holder
+finished can hand its capacity to a replacement while it is still trading.
+
+
+
+\clearpage
+
+\label{start:9}%
+
+\hypertarget{ai-disclosure-appendix}{%
+\subsection{9. AI-disclosure appendix}\label{ai-disclosure-appendix}}
+
+\hypertarget{how-ai-was-used}{%
+\subsubsection{9.1 How AI was used}\label{how-ai-was-used}}
+
+An AI assistant was used throughout as a co-author: proposing mechanism, writing
+the simulator, deriving the Fermi estimates, drafting these sections. Every
+experiment was executed rather than described, and because the simulator is
+integer-only and seeded, runs on Python 3.12.3/Linux and 3.13.5/macOS agree
+except for E3's wall-clock figures (\texttt{results/PROVENANCE.md}).
+
+Below is what the rubric asks for: what was rejected, and why.
+
+\hypertarget{prompts-that-mattered}{%
+\subsubsection{9.2 Prompts that mattered}\label{prompts-that-mattered}}
+
+\textbf{``Verify before building on it.''} Applied to citations and to the assistant's
+own account of the design's risks; it surfaced that the risk named first was not
+the real one (9.3, item 1).
+
+\textbf{``Comments say what the code does, not what it is supposed to prove.''} Applied
+to the simulator and every experiment script.
+
+\textbf{``Does the constraint actually bind?''} Asked of the first E1 run, which
+reported zero violations because the budget was far above what the flow consumed.
+A zero from a slack constraint says nothing. E1 now carries a \textbf{binding trial}
+where the risk and debit envelopes reach 99\% and the requirement is 49\% of
+equity; only that zero is meaningful.
+
+\textbf{``Attack your own interface.''} External hostile review was run each round
+against the code rather than the prose. It produced the authority-binding failure
+(9.3, item 6) and, late on, the discovery that a superseded experiment left on
+disk was passing on an empty sample.
+
+\hypertarget{suggestions-and-claims-rejected-and-why}{%
+\subsubsection{9.3 Suggestions and claims rejected, and why}\label{suggestions-and-claims-rejected-and-why}}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \textbf{That tiered maintenance margin breaks the decomposition.} Proposed as the
+  leading risk. It is not: tiers are per contract and additive. What actually
+  breaks decomposition is the portfolio-level add-on, which is super-additive.
+\item
+  \textbf{Abstracting the requirement into a general coherent-risk-measure
+  formulation.} Rejected: Appendix D.1 rests on exchanging a maximum with a sum, and
+  burying that step inside a general functional makes the paper harder to
+  defend, not stronger.
+\item
+  \textbf{Charging an order its marginal requirement.} A leg flipped from short to
+  long leaves the increment unchanged while the account's requirement moves to
+  its maximum (c1). Replaced by absolute worst-fill envelopes.
+\item
+  \textbf{A price-conditional schedule as a safety and capacity mechanism.} Withdrawn
+  with its evidence (ADR-2). A lease cannot remove a position it already
+  admitted.
+\item
+  \textbf{Letting a gateway accept locally risk-reducing orders under partition.}
+  Withdrawn: c9. Risk reduction is an account-level operation.
+\item
+  \textbf{Treating a lease id as authority.} Review demonstrated a valid lease id
+  submitted under a different account returning success. Replaced by the
+  registry and session binding of Appendix C.3.
+\item
+  \textbf{Reading the factor of two as a 64\% tolerance for a misreported account.}
+  Measured in a non-binding configuration. At the binding point the breach
+  tracks the overstatement one for one (E5 Part B).
+\item
+  \textbf{Expiry releasing exposure}, and \textbf{a holder's own report releasing it.}
+  Both replaced by seals and the account barrier (c8, c11, c12).
+\item
+  \textbf{That a circuit breaker always reduces the draw on the insurance fund.} E9
+  falsified it: against a slide, a breaker that reopens at the low turns a draw
+  of 0 into 214,856, because the halt stops the liquidator too (§5.4).
+\item
+  \textbf{Keeping the algebra in the body.} After the mid-point check-in the body was
+  rewritten around decisions, costs and risks, and the lemmas and the closure
+  proof moved to Appendix D.
+\end{enumerate}
+
+\hypertarget{what-the-numbers-are-and-are-not}{%
+\subsubsection{9.4 What the numbers are, and are not}\label{what-the-numbers-are-and-are-not}}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Current evidence:} E1--E9 and eleven test files --- 16 lifecycle
+  counterexamples, 6 worst-fill cases plus an exhaustive closed-form comparison
+  over 4,000 books, 6 recovery, 14 liquidation, 6 repricing, 6 authority, 7
+  execution-cost and 14 ledger cases, and a fuzz over 10,060 admissions.
+\item
+  E3's absolute latencies support a \textbf{scaling} claim, not NFR row 2's target.
+\item
+  E6's required-buffer figures are one configuration, one seed, one price path.
+\item
+  The ledger of §4 is designed and not implemented; §4.3 establishes three facts
+  about the account, not venue-level solvency.
+\item
+  The replay rate of §5.5 is assumed, not measured (§8.1).
+\item
+  §6.3 A3 is argued, not measured.
+\item
+  Replication, allocator failover (§5.5), the mark-price pipeline (§2.5) and the
+  waterfall below the unwind (§5.4) are designed and not built.
+\item
+  E8 covers one two-factor scenario set; it supports ``the mechanism holds for a
+  richer finite set'', not the adequacy of any set. E9's magnitudes are ours, not
+  Session 3's, and its fund figure is one configuration, not a sizing rule.
+\item
+  Superseded results --- E4's schedule comparison, E5's suppression sweep --- are in
+  \texttt{experiments/superseded/} and are cited nowhere as current.
+\end{itemize}
+
+\hypertarget{section-ownership}{%
+\subsubsection{9.5 Section ownership}\label{section-ownership}}
+
+Each member owns the sections below: presents them at the defence and answers
+for them. The panel may ask any member any question, and all four are prepared
+to explain the admission condition of §2.2, including where the factor of two
+comes from.
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+§ & Section & Owner \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+1 & Business context and requirements & Zhou Congxiang \\
+2 & Architecture & Liu Kefan \\
+3 & Consistency map & Zhou Congxiang \\
+4 & Data and storage design & Zhang Haoxi \\
+5.1--5.3 & State, log, idempotency chain & Zhang Haoxi \\
+5.4--5.7 & Liquidation, waterfall, recovery & Wu Youjhen \\
+6 & Security and threat model & Wu Youjhen \\
+7 & Trade-offs and alternatives & Liu Kefan \\
+8 & Operations & Wu Youjhen \\
+9, A, C, D & Disclosure and appendices & Liu Kefan \\
+\end{longtable}
+
+
+
+\label{start:10}%
+
+\hypertarget{appendix-a-decision-history}{%
+\subsection{Appendix A --- Decision history}\label{appendix-a-decision-history}}
+
+This appendix holds what the main body no longer claims. It is here because a
+design document that quietly deletes its reversals is less trustworthy than one
+that records them, and because §9 has to disclose what was rejected as well as
+what was adopted.
+
+Nothing in this appendix is current evidence. Where a figure appears, it was
+produced by an interface the mechanism has moved off, and the experiment that
+produced it now lives in \texttt{experiments/superseded/}.
+
+\hypertarget{a.1-what-was-withdrawn-and-what-replaced-it}{%
+\subsubsection{A.1 What was withdrawn, and what replaced it}\label{a.1-what-was-withdrawn-and-what-replaced-it}}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Withdrawn claim
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Why it failed
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+What replaced it
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+A capacity schedule contracting with a published market state makes the mechanism safe & A lease cannot remove a position it has already admitted. Capacity that shrinks restricts the \emph{next} admission, not the exposure already created & A flat ceiling for the term. The schedule survives only as a local operational trigger, with no capacity claim (ADR-2) \\
+A state-contingent schedule recovers 3.8× the throughput of worst-case sizing & Measured on the incremental-charge mechanism, which did not bound the account's requirement at all & Utilisation is reported directly: the closure caps it near half of equity, and E1's binding trial reaches 99\% of two envelopes at 49\% of equity \\
+Charging an order its marginal requirement is sufficient & A leg flipped from short to long leaves the local increment unchanged while the account's requirement moves to its maximum (c1) & Admission compares absolute worst-fill envelopes \\
+Gross notional is additive across the partition & Two gateways can hold opposite legs in the same symbol; they net inside the account & Gross is sub-additive by the triangle inequality, and the add-on is evaluated once on the summed gross (Appendix D.1) \\
+Expiry releases the exposure a holder created & A term ends authority. The positions stay & Authority and committed exposure are tracked separately; only a terminal reconciliation or an account barrier lowers the second (§5.4) \\
+A gateway may keep accepting risk-reducing orders during a partition & An order that lowers one gateway's requirement can raise the account's by removing a hedge held elsewhere (c9) & A gateway in quarantine admits nothing. Risk reduction is an account-level operation (§3.3) \\
+A compromised gateway's blast radius is bounded by its leases & Nothing downstream re-derives the envelopes the gateway compared against & The gateway is inside the trusted computing base, and §6.1 says what it can and cannot do \\
+A lease id identifies authority & It was a bearer token: any account, any claimed holder & Registered bindings and session-resolved holders at the ordering point (\texttt{tests/test\_authority.py}) \\
+The closure absorbs an equity overstatement of about 64\% & Measured in a configuration where the ceiling was not binding & At the binding point the breach tracks the overstatement one for one (E5 Part B) \\
+The lease term is the latency of every credit decision & Raising a limit takes effect at the next issuance & It is the enforcement latency of a \emph{tightening} under partition (§1.5) \\
+\end{longtable}
+
+\hypertarget{a.2-the-abuse-cases-the-schedule-created}{%
+\subsubsection{A.2 The abuse cases the schedule created}\label{a.2-the-abuse-cases-the-schedule-created}}
+
+Retained verbatim because they are the record of what the market-data
+authority argument was, and because §6.1's weaker claim only makes sense against
+them. Under the current condition the admission check reads no market state, so
+A1 has no target on the admission path; A2 survives in the weakened form now
+recorded as §6.3 A1.
+
+\hypertarget{a1-replaying-an-older-market-state}{%
+\paragraph{A1 --- Replaying an older market state}\label{a1-replaying-an-older-market-state}}
+
+The shard evaluates its schedule at the market state it reads. An account able
+to make a shard read a stale, more favourable state obtains capacity the current
+state does not permit.
+
+Mitigation: the shard evaluates its schedule at the most adverse state it has
+observed since the lease was installed, not at the state on the current message.
+A replayed lower state changes nothing.
+
+Cost of the mitigation when the feed is honest: none. In E5 the ratcheted and
+unratcheted configurations are identical on an honest feed --- 58 orders admitted,
+zero ticks with the requirement above equity. The defence only engages when the
+state goes backwards, which on an honest feed it does not.
+
+\hypertarget{a2-holding-the-published-mark-below-the-market}{%
+\paragraph{A2 --- Holding the published mark below the market}\label{a2-holding-the-published-mark-below-the-market}}
+
+An account able to suppress the published state, rather than replay an old one,
+is a different attack: the state never goes backwards, it simply fails to go
+forwards. The ratchet cannot see this, because there is nothing to ratchet
+against.
+
+E5 measures it. The published state is held at 0 between ticks 20 and 50 while
+the checker uses the true state:
+
+\begin{longtable}[]{@{}llll@{}}
+\toprule\noalign{}
+Configuration & Suppressed & Admitted & Ticks above equity, of 480 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Scalar lease & no & 36 & 236 \\
+Scalar lease & yes & 36 & 236 \\
+Schedule, current state & no & 58 & 0 \\
+Schedule, current state & yes & 62 & 12 \\
+Schedule, ratcheted & no & 58 & 0 \\
+Schedule, ratcheted & yes & 49 & 5 \\
+\end{longtable}
+
+Three readings. The scalar lease is indifferent to the attack because it never
+reads the state --- it is also above equity 236 ticks out of 480 for unrelated
+reasons (§7). The schedule closes that, and in doing so opens A2: suppression
+buys 4 extra admissions and 12 ticks of exposure. The ratchet reduces the
+exposure to 5 ticks and costs 9 admissions under attack.
+
+\textbf{This is a partial mitigation and we do not present it as more than that.} The
+residual belongs to the mark pipeline, not to the lease: multiple independent
+sources, a trimmed statistic across them, staleness detection on each source,
+and a bound on how far the published state may lag the sources. That pipeline is
+now designed in §2.5; this record is kept as the argument that led to it.
+
+\hypertarget{a.3-the-counterexample-ledger}{%
+\subsubsection{A.3 The counterexample ledger}\label{a.3-the-counterexample-ledger}}
+
+Sixteen lifecycle counterexamples (\texttt{tests/test\_counterexamples.py}, c1--c16), six
+worst-fill cases (w1--w6), six recovery cases (r1--r6), fourteen liquidation cases
+(l1--l14), six repricing cases (m1--m5 with m4 split), six authority cases
+(t1--t6), seven execution-cost cases (d1--d7) and fourteen ledger cases (a1--a14).
+Each was written after a failure, most of them found by external review, and
+each is named in the section of the main body that depends on it. The pattern
+worth extracting is that \textbf{every one of them was found by a check that compared
+against something recomputed independently}, never by a check that trusted a
+figure a component reported about itself.
+
+The three that changed the mechanism rather than fixing an implementation are
+c1 (absolute envelopes), c9 (local risk reduction is not global) and m1 (gross
+measured at one mark). The rest are lifecycle discipline.
+
+
+
+\label{start:11}%
+
+\hypertarget{appendix-c-protocols-in-full}{%
+\subsection{Appendix C --- Protocols in full}\label{appendix-c-protocols-in-full}}
+
+The main body states what each protocol guarantees and cites the test that pins
+it. This appendix carries the step-by-step form, for a reader checking the
+guarantee against the mechanism rather than reading the argument.
+
+\hypertarget{c.1-the-idempotency-chain-in-full}{%
+\subsubsection{C.1 The idempotency chain, in full}\label{c.1-the-idempotency-chain-in-full}}
+
+End to end, for one client order. Every link is a named identifier and a
+decision point that has been tested rather than argued.
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \textbf{The client} assigns a client order ID and retries with the same ID on
+  timeout. A timeout is an unknown outcome, not a failure.
+\item
+  \textbf{The gateway} checks its three envelopes and, if they hold, submits to the
+  ordering point under \texttt{(lease\_id,\ admission\_seq)} where \texttt{admission\_seq} is the
+  next number it has used under that lease.
+\item
+  \textbf{The ordering point} accepts that pair only if it is the next number for
+  the lease, and only if the lease is not fenced. A retry carrying the same
+  payload under the same pair succeeds again and records once; the same pair
+  with a different payload is a conflict and records nothing. The gap-free
+  sequence is what later lets a seal claim to cover every admission the lease
+  produced.
+\item
+  \textbf{A fill} is submitted under a \texttt{fill\_id} against an \texttt{order\_id}. The ordering
+  point refuses it --- writing nothing and moving nothing --- if the identifier has
+  been used with different figures, the order is unknown or cancelled, the
+  direction disagrees, the cumulative quantity would exceed what was admitted,
+  the price falls outside the band recorded at admission, or the fee exceeds the
+  cap for that quantity. A retry with the same figures lands once
+  (\texttt{tests/test\_execution\_debit.py}, d4 to d6).
+\item
+  \textbf{The order of operations is fixed}: the ordering point decides first, and
+  only a fill it accepted is folded into the gateway and the account. An earlier
+  implementation called the gateway first, which moved state the authority then
+  refused.
+\item
+  \textbf{A liquidation basket} is committed under a \texttt{basket\_id} as a single record.
+  A retry with the same payload is idempotent; the same identifier with
+  different figures is refused and moves nothing (\texttt{tests/test\_liquidation.py},
+  l7). A process that dies between the commit landing in the log and the
+  transfer being folded in locally rebuilds from the log, and \texttt{applied\_baskets}
+  plus the ledger's fill keys make the reapplication land once (l14).
+\item
+  \textbf{Replay is idempotent by log position.} An earlier version relied on the
+  order ID for that, which covers admissions and not fills or cancels, and
+  replaying the same slice twice applied the fills twice
+  (\texttt{tests/test\_recovery.py}, r2).
+\item
+  \textbf{The matching shard} applies a given client order ID at most once, so no
+  duplicate book action occurs regardless of how many times the order was
+  admitted upstream.
+\item
+  \textbf{Clearing} derives ledger entry IDs deterministically from the trade
+  sequence, so a replayed trade produces the same entry ID and is deduplicated
+  (running case, Part 3 §4).
+\end{enumerate}
+
+Step 2 is where this design differs from the running case, and it is a cost we
+state rather than hide: a retry routed through another gateway is a new admission
+attempt at that gateway and may conservatively consume envelope there, though it
+cannot produce a duplicate book action. That consumption is released at the next
+issuance.
+
+One asymmetry is deliberate and matters later. A cancel \emph{request} releases
+nothing; only an acknowledgement recorded at the ordering point does, because
+until then the order can still fill. That produces two different failures which
+are not the same fact and are tested separately (§5.4).
+
+Exactly-once is, as in the running case, end-to-end idempotency layered on
+at-least-once delivery. Nothing in the margin path changes that.
+
+\hypertarget{c.2-the-settlement-barrier-in-full}{%
+\subsubsection{C.2 The settlement barrier, in full}\label{c.2-the-settlement-barrier-in-full}}
+
+A seal is portable evidence for releasing \textbf{one} lease: the ordering point
+issues it when a lease is fenced, naming the last admission it recorded, and a
+holder carries it to the allocator. The account-wide compaction does not use one,
+because the allocator reads the same log the seal was cut from.
+
+\begin{quote}
+A seal releases one lease. A globally fenced, ordered account barrier permits
+account-wide compaction.
+\end{quote}
+
+\texttt{Allocator.settle} requires all of the following, and none of them is supplied by
+the caller:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  the account is in \texttt{settling}, so no new lease can be issued for it. Doing this
+  first is what stops a lease minted after the barrier from being authority the
+  settlement did not account for;
+\item
+  every lease ever minted for the account is fenced at the ordering point ---
+  every ingress lease, every incarnation, and the liquidator's own basket
+  authority. \texttt{all\_leases} is the set the barrier is taken over, not
+  \texttt{authority}, because a lease that admitted nothing is still authority;
+\item
+  a barrier watermark \texttt{B} at which the recorded sequence under each of those
+  leases is gap-free and no admission or basket for the account was recorded
+  under a lease outside the set. \texttt{submit} and \texttt{commit\_basket} already refuse
+  anything but the next number, so this check should never fire; it is here
+  because the settlement's whole claim is that the log is complete, and an
+  assertion that never fires is cheap next to a claim that is assumed;
+\item
+  the aggregate rebuilt from the log at \texttt{B}: filled positions, orders with no
+  authoritative cancel acknowledgement, worst-fill risk, repriced gross reach,
+  and the execution cost still ahead of the account;
+\item
+  installation under a credit-version compare-and-set, so a settlement computed
+  at an older barrier cannot overwrite a newer one;
+\item
+  issuance resumes only after the install.
+\end{enumerate}
+
+E7 exercises the refusals as well as the successes: \texttt{no\_fence} is refused with
+two ingress leases live, and \texttt{liquidator\_authority\_live} is refused with the
+liquidator's lease live even though every ingress lease is fenced and the
+account is flat.
+
+\hypertarget{c.3-authority-binding-at-the-ordering-point}{%
+\subsubsection{C.3 Authority binding at the ordering point}\label{c.3-authority-binding-at-the-ordering-point}}
+
+The ordering point holds \texttt{lease\_id\ -\textgreater{}\ (account,\ holder,\ kind)}, registered by the
+allocator at issuance because the allocator is the single issuer and therefore
+the only component that knows the binding. The holder on a submission is resolved
+from the authenticated session and never read from the request body. A submission
+is refused as \texttt{unknown\_lease}, \texttt{wrong\_account}, \texttt{wrong\_holder},
+\texttt{wrong\_authority\_kind} or \texttt{unauthenticated} before any sequence check runs.
+
+\texttt{kind} is \texttt{ingress} or \texttt{liquidation} and they are not interchangeable: an ingress
+holder that could commit a basket would be admitting with no ceiling at all,
+since the liquidator's admissions are checked against the merged account instead.
+
+Deliberately not checked here: the lease's term. The ordering point has no clock
+it can compare against an expiry set by another component, so an honest gateway
+is bounded by its own term and a Byzantine one only by the fence (§6.1, ADR-6).
+
+\texttt{tests/test\_authority.py} pins six cases, including the one an external reviewer
+demonstrated against the previous interface: a valid lease id submitted under a
+different account, which used to return \texttt{(True,\ "ok")}.
+
+
+
+\label{start:12}%
+
+\hypertarget{appendix-d-the-mechanism-formally}{%
+\subsection{Appendix D --- The mechanism, formally}\label{appendix-d-the-mechanism-formally}}
+
+§2.2--§2.3 state the mechanism in words. This appendix carries the definitions,
+the three lemmas, the worst-fill closed forms and the closure argument with its
+tightness, for a reader checking the claim rather than following the design. The
+tests named here are the evidence; the prose is the argument.
+
+\hypertarget{d.1-what-can-be-divided-and-what-cannot}{%
+\subsubsection{D.1 What can be divided, and what cannot}\label{d.1-what-can-be-divided-and-what-cannot}}
+
+Write the account's requirement as a scenario term plus an add-on. Two gross
+figures are needed and they are not the same object:
+
+\[
+R(P)=\max_{k\in S}\operatorname{loss}_k(P),
+\qquad
+G_k(P)=\sum_s |q_s|\,m_s(k),
+\qquad
+G^{+}(P)=\sum_s |q_s|\max_{j\in S} m_s(j)
+\]
+
+\[
+M_k(P)=R(P)+A\bigl(G_k(P)\bigr),
+\qquad A \text{ convex, non-decreasing, } A(0)=0
+\]
+
+\(G_k\) is what the requirement is computed from; \(G^{+}\) is what a lease reserves
+against, because the marks move during a term (D.2). \(G_k(P)\le G^{+}(P)\) for every
+\texttt{k} by construction. The code keeps them apart as \texttt{gross} and \texttt{gross\_reach}.
+
+\(R\) is the worst loss across a fixed scenario set \(S\), and the loss under any
+single scenario is linear in positions. \texttt{A} is a concentration and liquidity
+add-on.
+
+\textbf{Model boundary.} The algebra below holds for any finite \(S\). The set used in
+every correctness experiment here is \textbf{seven points on a single factor with
+non-negative loadings}; E3 additionally times a 16-point grid. Nothing here shows
+that a single-factor grid is adequate for 40 underlyings --- basis and
+idiosyncratic risk would need more factors or a wider set, and the evidence for
+\emph{that} choice is not in this document. What is shown is that the decomposition,
+the closure and the lifecycle are correct for whatever finite \(S\) is picked.
+
+\textbf{The partition is by gateway, not by symbol.} Two gateways can hold opposite
+positions in the \emph{same} symbol, and those net inside the account, so gross is not
+additive across the partition.
+
+\textbf{Lemma 1 --- R is sub-additive.}
+\(R(P)=\max_k\sum_g \operatorname{loss}_k(P_g)\le\sum_g\max_k \operatorname{loss}_k(P_g)=\sum_g R(P_g)\): a
+single scenario cannot beat the per-gateway worst cases taken separately.
+
+\textbf{Lemma 2 --- gross is sub-additive.} Per symbol,
+\(\bigl|\sum_g q_{g,s}\bigr|\le\sum_g |q_{g,s}|\) by the triangle inequality; multiplying by a
+positive mark and summing gives \(G_k\bigl(\sum_g P_g\bigr)\le\sum_g G_k(P_g)\) for every \texttt{k},
+and the same for \(G^{+}\), with equality only when every gateway holds the same sign
+in every symbol.
+
+\textbf{Lemma 3 --- A does not decompose.} A convex function through the origin is
+super-additive on non-negative arguments, so \(\sum_g A(G_g)\le A\bigl(\sum_g G_g\bigr)\).
+Per-gateway add-on allowances added up under-state the whole, however the
+positions are split.
+
+The decomposition rule follows rather than being chosen:
+
+\begin{quote}
+The sub-additive parts divide into per-gateway ceilings checked locally. The
+add-on does not; it is evaluated once, centrally, on the summed gross, and \texttt{A}
+being non-decreasing is what makes that an upper bound.
+\end{quote}
+
+Chained, for the realised scenario \texttt{k}:
+
+\[
+G_k(P')\;\le\;G^{+}(P')\;\le\;\sum_g G^{+}(P'_g)\;\le\;\sum_g \lambda_g^{G}
+\]
+
+the first step by construction, the second by Lemma 2, the third by the admission
+rule. \(A\) non-decreasing then carries it to
+\(A(G_k(P'))\le A(\sum_g \lambda_g^{G})\). Nothing in that chain needs gross to be additive.
+Lemmas 1 and 3 are checked over 2,000 sampled portfolios in
+\texttt{tests/test\_algebra.py}, in the predicted directions.
+
+\hypertarget{d.2-the-envelopes-and-the-closure}{%
+\subsubsection{D.2 The envelopes and the closure}\label{d.2-the-envelopes-and-the-closure}}
+
+A lease cannot undo an admission it has already granted. Everything here follows
+from that.
+
+\hypertarget{three-envelopes}{%
+\paragraph{Three envelopes}\label{three-envelopes}}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Envelope
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+What it bounds
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Why separate
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\(\lambda_g^{R}\) & worst-fill scenario requirement of everything the gateway holds & sub-additive, so it divides \\
+\(\lambda_g^{G}\) & worst-fill \(G^{+}\) the gateway can reach & an order can lower \texttt{R} while raising gross \\
+\(\lambda_g^{D}\) & execution cost the gateway can still incur, plus cost already incurred that the equity the current lease was solved against does not yet reflect & its effect on equity is covered by neither the scenario requirement nor the gross add-on \\
+\end{longtable}
+
+The three are not three allocations: \(\lambda^{G}\) and \(\lambda^{D}\) are issued at fixed ratios
+to \(\lambda^{R}\), so the solver searches one scalar along a ray through a
+three-dimensional feasible set. Dropping the second half of \(\lambda^{D}\) is what made
+capacity decay every term in an earlier implementation (d7).
+
+\hypertarget{what-a-gateway-holds-is-orders-not-positions}{%
+\paragraph{What a gateway holds is orders, not positions}\label{what-a-gateway-holds-is-orders-not-positions}}
+
+Two resting orders of opposite sign net to nothing, and if only one fills the
+account carries the other side. The envelopes are taken over the worst subset of
+fills that could still occur, which needs no enumeration because the loss under a
+fixed scenario is linear:
+
+\[
+E_k=\operatorname{loss}_k(f)+\sum_i \max\bigl(0,\operatorname{loss}_k(o_i)\bigr),
+\qquad
+R_{\mathrm{wf}}=\max\Bigl(0,\Bigl\lceil \tfrac{1}{D}\max_k E_k \Bigr\rceil\Bigr)
+\]
+
+\[
+G_{\mathrm{wf}}=\sum_s \Bigl(\max_{j} m_s(j)\Bigr)\,
+\max\bigl(|f_s+b_s|,\;|f_s-s_s|\bigr)
+\]
+
+with \(f\) the filled position, \(o_i\) the live orders, and \(b_s,s_s\) the unfilled
+quantity on each side.
+
+Both closed forms agree with enumeration of all 2\^{}n fill subsets on 4,000 random
+books (\texttt{test\_worst\_fill\_exhaustive}). Admission compares these \textbf{absolute}
+figures against the ceilings, not the increment an order adds: a leg flipped from
+short to long leaves the increment unchanged while the account's requirement moves
+to its maximum (c1).
+
+\hypertarget{where-gross-is-measured}{%
+\paragraph{Where gross is measured}\label{where-gross-is-measured}}
+
+A lease reserves against \(G^{+}\), not against the gross standing when the solve ran.
+A short position's adverse scenario raises the mark, raises gross and raises the
+add-on, while a figure measured at the issuance mark does not move. Reserving at
+the issuance mark admits 296 lots in the worked case of m1 and finishes 382,143
+above equity; reserving at \(G^{+}\) admits 249 and finishes 5,842 inside. ADR-3 gives
+the cost and the scope of the tightness claim.
+
+\hypertarget{the-condition-and-its-closure}{%
+\paragraph{The condition and its closure}\label{the-condition-and-its-closure}}
+
+\[
+2\sum_g \lambda_g^{R}\;+\;A\Bigl(\sum_g \lambda_g^{G}\Bigr)\;+\;\sum_g \lambda_g^{D}
+\;\;\le\;\; E_0
+\]
+
+with \(E_0=\text{Collateral}+\sum_s (c_s+q_s m_s)-\text{fees}\), mark-to-market
+equity rather than collateral. There is no market state in it.
+
+Write \(P'\) for the position the term ends with, \texttt{D} for the execution cost it
+incurred, \texttt{k} for the realised scenario. Three bounds come from the admission
+rule and the fourth because \texttt{R} is a maximum over a set containing \texttt{k}:
+
+\[
+R(P')\le\sum_g \lambda_g^{R},
+\quad
+G_k(P')\le\sum_g \lambda_g^{G},
+\quad
+D\le\sum_g \lambda_g^{D},
+\quad
+\operatorname{loss}_k(P')\le R(P')
+\]
+
+Adding requirement, cost and realised loss:
+
+\[
+M_k(P')+D+\operatorname{loss}_k(P')
+\;\le\;
+2\sum_g \lambda_g^{R}+A\Bigl(\sum_g \lambda_g^{G}\Bigr)+\sum_g \lambda_g^{D}
+\;\le\; E_0
+\]
+
+and since \texttt{Equity\_after(k)\ =\ E\_0\ -\ D\ -\ loss\_k(P\textquotesingle{})},
+
+\[
+M_k(P')\;\le\;E_0-D-\operatorname{loss}_k(P')\;=\;\mathrm{Equity}_{\text{after}}(k)
+\]
+
+\textbf{Subtracting \texttt{D} is why the third resource exists.} A conclusion of
+\(M\le E_0-\text{loss}\) would leave execution cost out of the arithmetic while still
+listing \(\lambda^{D}\) as a ceiling.
+
+The factor of two is a closure, not a margin, and it is tight. Set \texttt{A\ =\ D\ =\ 0}
+and take \(R(P')=\lambda^R\) with the realised scenario attaining the maximum, so
+\(\operatorname{loss}_k=R\). Then \(M_k=\lambda^R\) and \(\mathrm{Equity}_{\text{after}}=E_0-\lambda^R\), equal precisely
+when \(E_0=2\lambda^R\). With \(c<2\) the solve issues \(\lambda^R=E_0/c\), and the same
+position ends with \(M_k=E_0/c>E_0-E_0/c\). The coefficient cannot be reduced.
+
+\hypertarget{what-the-closure-costs}{%
+\paragraph{What the closure costs}\label{what-the-closure-costs}}
+
+Utilisation is capped near half of equity before the add-on reserve. In E1's
+binding trial --- every order filled at the worst price and fee the policy allows ---
+the risk and debit envelopes reach 99\% and the requirement is 49\% of equity, with
+no breach. The offset decomposition gives up is separately D.1's sub-additivity
+gap (§7). The multi-factor case is E8.
+
+
+
+\label{start:13}%
+
+\hypertarget{appendix-e-liquidation-and-settlement-flow}{%
+\subsection{Appendix E --- Liquidation and settlement flow}\label{appendix-e-liquidation-and-settlement-flow}}
+
+The step-by-step flow behind §5.4, moved here from §2.9 to keep the body to
+its page budget. E7 injects a fault at each of its three stages.
+
+\hypertarget{e.1-figure-5-liquidation-and-settlement}{%
+\subsubsection{E.1 Figure 5 --- Liquidation and settlement}\label{e.1-figure-5-liquidation-and-settlement}}
+
+The path from a shortfall to capacity being returned, in three stages. E7 injects
+a fault at each.
+
+\begin{figure}[htbp]\centering
+\includegraphics[height=18.5cm]{fig3a}\hfill\includegraphics[height=18.5cm]{fig3b}\hfill\includegraphics[height=18.5cm]{fig3c}
+\caption{Liquidation and settlement. Stop, unwind, settle. The two exits from the cancel check are the two different facts of \S5.4.}
+\end{figure}
+
+The cancel check has two labelled exits because they are two different facts
+(§5.4): a cancel recorded at the ordering point releases the order, one the
+matching side never confirmed does not. The barrier refuses on \texttt{no\_fence} and on
+a live liquidator, and E7 exercises both refusals.
+
+
+
+\label{start:14}%
+
+\end{document}

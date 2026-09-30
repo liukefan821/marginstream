@@ -1,7 +1,8 @@
 # Provenance of the current results
 
-Every file in this directory was produced by one run of one script, all seven on
-the same machine in the same session. Reproducing them needs the same machine
+Every file in this directory was produced by one run of one script, E1–E7 on
+the same machine in the same session; E8 and E9 were added later, as noted in
+their rows. Reproducing them needs the same machine
 for the timing figures and only the same code for everything else: the simulator
 is integer-only and seeded, so the six non-timing files are byte-identical on any
 machine running the same commit.
@@ -20,6 +21,8 @@ machine running the same commit.
 | `e5_flawed_equity.json` | `experiments/e5_flawed_equity_negative.py` | negative control: ceilings solved against a misreported equity |
 | `e6_liquidation_delay.json` | `experiments/e6_liquidation_delay.py` | liquidation delay and the insurance-fund draw, decomposed exactly |
 | `e7_operational_faults.json` | `experiments/e7_operational_faults.py` | eleven faults injected into the liquidation path |
+| `e8_multifactor.json` | `experiments/e8_multifactor.py` | E1's oracle on a two-factor mixed-sign scenario set, with a control. Recorded 2026-09-30 15:23 UTC, Python 3.12.3, Linux x86_64 |
+| `e9_flash_crash.json` | `experiments/e9_flash_crash.py` | a flash crash through breaker, liquidation, insurance fund and ADL. Same session as E8 |
 
 **`e3_hot_path.json` is the only machine-dependent file here.** Its figures are
 wall-clock nanoseconds from CPython on a shared machine and are not comparable
