@@ -77,8 +77,11 @@ disk was passing on an empty sample.
 - Replication, allocator failover (§5.5), the mark-price pipeline (§2.5) and the
   waterfall below the unwind (§5.4) are designed and not built.
 - E8 covers one two-factor scenario set; it supports "the mechanism holds for a
-  richer finite set", not the adequacy of any set. E9's magnitudes are ours, not
-  Session 3's, and its fund figure is one configuration, not a sizing rule.
+  richer finite set", not the adequacy of any set. E9's breaker trips at half the
+  widest scenario step, 10% on symbol A, matching Session 3's band; the halt
+  duration is not modelled. The fall is larger than Session 3's 4% because a move
+  inside the grid triggers no liquidation, the reopen prices are assumptions, and
+  the fund figure is one configuration, not a sizing rule.
 - Superseded results — E4's schedule comparison, E5's suppression sweep — are in
   `experiments/superseded/` and are cited nowhere as current.
 
@@ -101,3 +104,4 @@ comes from.
 | 7 | Trade-offs and alternatives | Liu Kefan |
 | 8 | Operations | Wu Youjhen |
 | 9, A, C, D | Disclosure and appendices | Liu Kefan |
+| E, F | Liquidation detail, trust boundaries | Wu Youjhen |

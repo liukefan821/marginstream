@@ -18,7 +18,9 @@ One row per flow, with the model chosen and why it is survivable. The test is
 | Position feed into the allocator | Bounded-stale, eventually consistent | A fill the allocator has not seen was admitted under a lease and is inside that lease's absolute ceilings. Until a terminal ordered reconciliation it stays charged to that holder |
 | Holder occupancy | Over-approximated per holder while any is live; compacted from the log once none is | Per-holder figures are summed and do not net, which is necessary while an unreachable holder may still be acting (§5.4) |
 | Audit journal | Durable append-only, linearisable per shard | Replay must reproduce the decision exactly, which fails if entries reorder |
-| Dashboards, ledger balances, retry handling | Eventually consistent; fold of the journal; at-least-once with end-to-end idempotency | A stale capacity figure drives no decision the system will not re-check; exactly-once is not a transport property (§5.3) |
+| Dashboards and capacity displays | Don't-care: eventually consistent, may lag | No decision depends on them; anything a client acts on is re-checked at admission |
+| Balances that authorise money, such as a withdrawal | Strong: read only once the ledger's fold has reached the account's latest fill | Paying out against a stale balance could release money the account no longer has (§6.2) |
+| Retry handling | At-least-once delivery with end-to-end idempotency | Exactly-once is not a transport property (§5.3) |
 
 The row worth arguing is the position feed. A stale feed cannot under-state the
 requirement, and the reason is **not** that lag produces a smaller ceiling —

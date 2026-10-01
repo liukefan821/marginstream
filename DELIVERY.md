@@ -13,6 +13,26 @@ empty sample, and exited 0.
 Apply these by hand after extracting. Each is a path removed from the package
 relative to the previous one.
 
+### Package of 2026-10-01 (professor feedback: legibility)
+
+No deletions. Added `paper/00_executive_summary.md` (executive summary, first
+page). §5.4 maps the Session 3 timeline to tested and design-only responses;
+§4.2 and §4.4 state each ledger account's normal side and write every entry as
+Dr/Cr; §2.2, §9.4 and Appendix D corrected; §3.1 separates displays (don't-care),
+money-authorising balances (strong) and retry handling; §6.2 states the
+withdrawal ceremony. To keep the body to 20 pages, §6.1's full argument moved to
+the new `paper/A_F_trust_boundaries.md` (Appendix F), the E6 and E7 detail of
+§5.4 moved to Appendix E.2, §1.6–1.7 and §8.4 were compressed, §2.8 was removed
+Figures 1–3 are scaled to 65%, 65% and 55% width and Figure 5 to 16 cm, and
+Figure 4 is redrawn in TikZ (`paper/figures/fig5_deployment.tex`) so no label
+overlaps; every figure is pinned to its own text, and the markdown's `---`
+separators no longer print as rules. Later corrections: §2.2 separates the
+capacity cost of a wider shock range from the time cost of more scenarios; the
+executive summary says atomic basket transfers; §9.5 lists owners for
+Appendices E and F (there is no Appendix B, which was folded into §2.9).
+`paper/assemble_whitepaper.py` builds on macOS and with pandoc 3. `experiments/e9_flash_crash.py` changed in its
+docstring only; every result file is unchanged.
+
 ### Package of 2026-09-30 (after approval)
 
 No deletions. Added: `marginstream/scenarios.py`, `experiments/e8_multifactor.py`,
@@ -105,30 +125,16 @@ changed by re-recording and archiving, which is the point of the round.
 
 ## Page budget
 
-The brief allows **≤ 20 pages + appendices**. Item 9 of its required contents is
-itself named "AI-disclosure appendix", so the body that counts is §1–§8.
+The brief allows ≤ 20 pages + appendices; the body that counts is the executive
+summary and §1–§8.
 
-    §1-§8    20 pages
-    §9        1 page
-    A, C      4 pages
-    total    25 pages
+    Summary + §1-§8   20 pages
+    §9                  1 page
+    Appendices          8 pages
 
-§1–§8 is at the limit, not over it. If the grader counts §9 in the body it is 21,
-so the first cut if one is needed is §9 moved behind the appendix divider, which
-is where its own title says it belongs.
+## Status before submission
 
-## Outstanding before submission
-
-1. **`paper/09` §9.5 ownership tables are `TODO`.** Four members, nine sections
-   and four modules. This cannot be filled in from here and **must not reach the
-   PDF as `TODO`**.
-2. **Figures are rendered and embedded.** Mermaid CLI with a headless browser,
-   native SVG labels rather than HTML, Times to match the body. Figures 2 and 3
-   are split into panels because the single-chain versions came out 35cm and
-   70cm tall at column width.
-3. **The PDF is built and the figures are rendered.** `paper/MarginStream_whitepaper.pdf`
-   is the current build; `paper/assemble_whitepaper.py` regenerates it from the
-   markdown. Smallest figure label is 6.2pt after scaling.
-4. **Course-pack cross-references unverified.** The running-case citations
-   (Part 2 §3, Part 3 §1/§4/§7, Part 5 §1) have not been checked against the
-   source material.
+1. §9.5 ownership is filled in.
+2. The PDF is rebuilt from the markdown with `paper/assemble_whitepaper.py`.
+3. The running-case citations (Part 2 §3, Part 3 §1/§4/§7, Part 4 §2–3,
+   Part 5 §1) were checked against the OrderStream case pack on 2026-10-01.

@@ -14,6 +14,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(REPO, "build")
 
 ORDER = [
+    ("00_executive_summary.md", None),
     ("01_context_and_requirements.md", None),
     ("02_architecture.md", None),
     ("diagrams.md", None),
@@ -28,6 +29,7 @@ ORDER = [
     ("C_protocols.md", None),
     ("A_D_mechanism.md", None),
     ("A_E_figures.md", None),
+    ("A_F_trust_boundaries.md", None),
 ]
 
 # height reserved for each rendered mermaid figure, in order of appearance
@@ -69,21 +71,21 @@ CAPTION = {
 BLOCK_OF = [1, 2, 2, 2, 4, 5, 3, 3, 3]
 
 BLOCK = {
-    1: r"\includegraphics[width=0.88\linewidth]{fig1_components}",
-    2: (r"\includegraphics[width=\linewidth]{fig2a}\\[0.6em]"
-        r"\includegraphics[width=\linewidth]{fig2b}\\[0.6em]"
-        r"\includegraphics[width=\linewidth]{fig2c}"),
-    3: (r"\includegraphics[height=18.5cm]{fig3a}\hfill"
-        r"\includegraphics[height=18.5cm]{fig3b}\hfill"
-        r"\includegraphics[height=18.5cm]{fig3c}"),
-    4: r"\includegraphics[width=0.62\linewidth]{fig4_ladder}",
-    5: r"\includegraphics[width=0.72\linewidth]{fig5_deployment}",
+    1: r"\includegraphics[width=0.65\linewidth]{fig1_components}",
+    2: (r"\includegraphics[width=0.65\linewidth]{fig2a}\\[0.6em]"
+        r"\includegraphics[width=0.65\linewidth]{fig2b}\\[0.6em]"
+        r"\includegraphics[width=0.65\linewidth]{fig2c}"),
+    3: (r"\includegraphics[height=16cm]{fig3a}\hfill"
+        r"\includegraphics[height=16cm]{fig3b}\hfill"
+        r"\includegraphics[height=16cm]{fig3c}"),
+    4: r"\includegraphics[width=0.55\linewidth]{fig4_ladder}",
+    5: r"\includegraphics[width=0.85\linewidth]{fig5_deployment}",
 }
 
 
 def figure_block(n):
     return ("\n```{=latex}\n"
-            "\\begin{figure}[htbp]\\centering\n"
+            "\\begin{figure}[H]\\centering\n"
             "%s\n\\caption{%s}\n\\end{figure}\n```\n") % (BLOCK[n], CAPTION[n])
 
 
@@ -129,6 +131,8 @@ def fix_glyphs(md):
 def convert(path):
     md = open(os.path.join(REPO, "paper", path)).read()
     md = strip_mermaid(md)
+    # the markdown's "---" separators read well on GitHub but print as stray rules
+    md = re.sub(r"^---\s*$", "", md, flags=re.M)
     md = fix_glyphs(md)
     # demote headings by one level so file-level "#" becomes \section
     md = re.sub(r"^(#+) ", lambda m: "#" * (len(m.group(1)) + 1) + " ", md,
@@ -149,7 +153,6 @@ PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 
 \usepackage[top=1.9cm,bottom=1.9cm,left=2.0cm,right=2.0cm]{geometry}
 \usepackage{fontspec}
-\defaultfontfeatures{Path=/usr/share/texmf/fonts/opentype/public/tex-gyre/}
 \setmainfont{texgyretermes-regular.otf}[
   BoldFont=texgyretermes-bold.otf,
   ItalicFont=texgyretermes-italic.otf,
@@ -164,6 +167,7 @@ PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 \usepackage{longtable,booktabs,array,calc}
 \usepackage{etoolbox}
 \usepackage{graphicx}
+\usepackage{float}  % [H]: a figure stays where its text puts it
 \usepackage[export]{adjustbox}
 \usepackage{caption}
 \captionsetup{font=small,labelfont=bf,skip=4pt}
@@ -190,6 +194,7 @@ PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 \AtBeginEnvironment{longtable}{\small}
 \providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
 \newcommand{\passthrough}[1]{#1}
+\newcounter{none}  % pandoc 3 tables reference it
 
 \begin{document}
 

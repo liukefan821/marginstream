@@ -46,9 +46,9 @@ collapses to a local counter, and we would say so rather than defend it.
 
 - **The scenario part** is the worst loss the account takes over a fixed set of
   market moves. It *can* be split: the worst case of the whole account is never
-  more than the worst cases of its parts added up, because one market move
-  cannot be the worst for every part at once. So each gateway gets its own
-  risk budget and checks it locally.
+  more than the worst cases of its parts added up, and equals that sum only when
+  one market move is the worst for every part at once. So each gateway gets its
+  own risk budget and checks it locally.
 - **The concentration add-on** grows faster than size (it is convex). Pieces of
   it add up to *less* than the whole, so splitting it would under-charge. It is
   never split: it is reserved once, centrally, on the total size all gateways
@@ -68,12 +68,12 @@ budget is 66.7, the same move leaves equity at 33.3 against a requirement of
 66.7, and the account is in breach.
 
 The result: **the requirement stays inside equity after any market move the
-scenario set covers, with no central call per order.** The price: only about
+scenario set covers, with no allocator call per order.** The price: only about
 half of equity is usable. In E1's binding trial every order fills at the worst
 price and fee the policy allows; the budgets reach 99% and the requirement is
 49% of equity, with no breach. Appendix D carries the algebra.
 
-**Model risk, stated.** Every correctness experiment in §2–§5 uses a simple
+**Model risk, stated.** Most correctness experiments in §2–§5 use a simple
 scenario set: seven points on one factor. The split and the closure hold for
 *any* finite scenario set; E8 re-runs E1's oracle on seventeen scenarios with two
 factors, loadings of both signs and idiosyncratic moves, and finds no breach in
@@ -84,8 +84,9 @@ particular set is adequate for 40 underlyings — that is a calibration question
 is handled by liquidation and the insurance fund (§5.4), which is what E9's
 flash crash exercises; the set is versioned data on the log (§4.1), so it can be
 widened between sessions and a replay still reproduces old decisions; and a
-wider set costs capacity, not latency, because admission is one pass over the
-set (E3: 7 → 16 scenarios, +34%).
+wider shock range costs capacity, while more scenarios cost some admission time,
+because admission is one pass over the set (E3: 7 → 16 scenarios, +34%);
+neither affects correctness.
 
 ## 2.3 What a lease grants
 
@@ -203,9 +204,3 @@ gross, caches of pure functions of the order state.
 batch at entry and refuses the whole batch on any gap, so a seal never covers a
 hole; and a fence takes effect between batches, never inside one. Neither is
 implemented; the simulator commits one admission at a time.
-
-## 2.8 What this architecture does not do
-
-It does not identify who is behind an order, price liquidity, or make the
-matching core elastic. The liquidation waterfall below the unwind — the venue
-book's limits, the insurance fund and ADL — is designed in §5.4 and not built.

@@ -64,8 +64,8 @@ What matters is where each sits and what the margin authority does to it:
 | Cited from the running case | Where it sits here (Figure 1) | How the margin authority interacts with it |
 |---|---|---|
 | Matching engine, single writer per symbol (Part 2 §3) | behind the ordering point, eight shards | none on the order path: a shard holds no lease and makes no margin decision. Liquidation does not use it; baskets are internal transfers (§5.4) |
-| Replicated log (Part 4 §3) | the ordering point's log | the allocator writes lease inputs to it and reads occupancy from it; gateways derive their budgets from it; fences, seals and barriers are records on it |
-| Determinism | every component's state is a fold of the log | budgets are derived deterministically from logged inputs, so they are not logged themselves (ADR-4); all arithmetic is integer |
+| Replicated log (Part 4 §2–3) | the ordering point's log | the allocator writes lease inputs to it and reads occupancy from it; gateways derive their budgets from it; fences, seals and barriers are records on it |
+| Determinism (Part 2 §3) | every component's state is a fold of the log | budgets are derived deterministically from logged inputs, so they are not logged themselves (ADR-4); all arithmetic is integer |
 | Double-entry ledger (Part 3 §1) | downstream of fills and baskets | a lease never appears in it; `USER_MARGIN_HOLD` replaces per-order `USER_HOLD`; funding, the insurance fund and ADL are new postings (§4.4) |
 
 ## 1.4 Non-functional requirements
@@ -106,34 +106,19 @@ against an assumed tightening SLO, not a regulatory figure.
 
 ## 1.6 What the allocator has to compute, and how often
 
-Per account per issuance: one evaluation of the scenario term at |S| × contracts
-≈ 16 × 5 ≈ 80 multiply-adds, one feasibility check of §2.2's condition at the same
-order, and a bisection for the scale over 10⁹ minor units at ≈ 30 iterations —
-≈ 3 × 10³ operations in all. At 10⁴ accounts changed per issuance that is
-**≈ 3 × 10⁷ per issuance** and, at a 100 ms cadence, **≈ 3 × 10⁸ per second**.
-Sixteen allocator shards (§2.6) carry ≈ 2 × 10⁷ each: headroom, not a fit.
-
-No invariant spans two accounts, which is what makes the sharding trivial, and
-recompute is incremental: unchanged positions and marks keep their ceilings.
+Each account needs about 3 × 10³ operations per issuance: one pass over the
+scenario set, one check of §2.2's condition and a bisection for the budget size.
+With 10⁴ accounts changing per issuance, that is **≈ 3 × 10⁷ operations per
+issuance**, or ≈ 3 × 10⁸ per second at a 100 ms cadence, which sixteen
+allocator shards (§2.6) carry with headroom. No invariant spans two accounts, so
+sharding by account is trivial, and unchanged accounts keep their budgets.
 
 ## 1.7 What the admission path may do per order
 
-The admission decision must not recompute the requirement from positions. Each
-gateway keeps, per account, the running loss numerator under each of the |S|
-scenarios plus the worst-fill gross and debit totals, updated on each order state
-change. Admitting is one pass over the grid, one symbol's gross update and three
-integer comparisons — independent of how many orders are live.
-
-Memory is ≈ 128 B per (account, gateway) pair; at 10⁵ active accounts touching 5
-gateways each, ≈ 5 × 10⁵ pairs and ≈ 64 MB resident.
-
-**Measured, not argued.** E3 times the incremental path against a full scan
-computing identical envelopes, after checking the two agree on 400 random books.
-From the recorded run in `results/e3_hot_path.json`: increasing live orders 10×,
-from 50 to 500, changed the incremental median by 1.1%, while the full scan over
-the same range grew 6.7×; widening the grid from 7 scenarios to 16 raised the
-incremental median by 34%. That is O(|S|) against O(orders × |S|).
-
-Absolute timings are not quoted: they are CPython wall-clock figures, three
-orders of magnitude from a compiled implementation. The ratios support the
-scaling claim; NFR row 2's target remains argued.
+Admission never recomputes the requirement from positions. Each gateway keeps
+running worst-case totals per account, about 128 bytes each, or ≈ 64 MB for
+5 × 10⁵ account and gateway pairs, and admitting is one pass over the scenario
+set and three integer comparisons. E3 confirms the scaling: ten times more live
+orders changed the incremental check by 1.1% while a full scan grew 6.7×, and
+widening the set from 7 to 16 scenarios cost 34%. These are CPython ratios, so
+NFR row 2's absolute target remains argued.

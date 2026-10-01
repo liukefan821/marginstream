@@ -48,8 +48,29 @@ flowchart TD
 ```
 
 The cancel check has two labelled exits because they are two different facts
-(§5.4): a cancel recorded at the ordering point releases the order, one the
+(E.2): a cancel recorded at the ordering point releases the order, one the
 matching side never confirmed does not. The barrier refuses on `no_fence` and on
 a live liquidator, and E7 exercises both refusals.
 
+## E.2 What a cancel and a delay cost
 
+### Two ways a cancel fails
+
+| Failure | What the log holds | What the settlement must do |
+|---|---|---|
+| Acknowledgement recorded, notification to the gateway lost | the cancel | release the order; only the local view is stale |
+| Matching side never confirmed | nothing | keep the worst-fill reservation and the execution-cost reserve |
+
+Fencing does not help in the second case: it stops new admissions and does
+nothing to a resting order. Both arms of E7 show one order live at the end; the
+settlement figure is `(0, 0, 0)` for the recorded cancel and `(120, 2232, 9)` for
+the unacknowledged one.
+
+### What the delay costs
+
+E6 splits the equity change exactly — ending equity = trigger equity + drift −
+slippage − fees, asserted on integers with no tolerance. Across its delay sweep
+execution cost runs 2,522 → 6,486 while market drift runs 16,444 → 229,708. **What
+the mechanism controls — new admissions and the cost of unwinding — is bounded;
+market drift is not.** Without a fence the unwind's cost exceeds its bound by
+1,562. E6's figures are one configuration, one seed, one price path.

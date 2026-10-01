@@ -1,10 +1,12 @@
 """E9: a flash crash run through the liquidation path, with a circuit breaker,
 an auction reopen, and the waterfall below the account.
 
-The path follows the tabletop of Session 3 in shape: a fall well past the edge
-of the scenario grid inside a few ticks, a symbol breaker that halts trading,
-and a reopen by auction. The magnitudes are ours; the session gave the shape,
-not the numbers. Units are E6's: a rate of 1000 moves the marks by the widest
+The path follows the Session 3 timeline (slide 29): a fall past the edge of the
+scenario grid, a symbol breaker, and a reopen by auction. The breaker trips at
+half the widest grid step, which is 10% on symbol A (widest step 200 on a mark
+of 1000) and matches the slide's band; the slide's 60 s halt duration is not
+modelled. Session 3's headline move of 4% lies inside the grid, so the fall here
+is larger: 3.4 widest steps. Units are E6's: a rate of 1000 moves the marks by the widest
 scenario step in one tick.
 
 Each account is long. Both gateways are loaded to their ceilings and filled, except that gateway 1 gives back 20 lots of room, so the crash is the
