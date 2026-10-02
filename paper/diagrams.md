@@ -1,8 +1,7 @@
 # 2.9 Architecture diagrams
 
 The three views §2 requires — component, data flow, deployment — plus the
-degradation ladder. The liquidation flow is in Appendix E. Mermaid source; `paper/DIAGRAM_EXPORT.md`
-covers rendering.
+degradation ladder. The liquidation flow is in Appendix E.
 
 ---
 

@@ -31,13 +31,14 @@ $R$ is the worst loss across a fixed scenario set $S$, and the loss under any
 single scenario is linear in positions. `A` is a concentration and liquidity
 add-on.
 
-**Model boundary.** The algebra below holds for any finite $S$. The set used in
-every correctness experiment here is **seven points on a single factor with
-non-negative loadings**; E3 additionally times a 16-point grid. Nothing here shows
-that a single-factor grid is adequate for 40 underlyings — basis and
-idiosyncratic risk would need more factors or a wider set, and the evidence for
-*that* choice is not in this document. What is shown is that the decomposition,
-the closure and the lifecycle are correct for whatever finite $S$ is picked.
+The algebra below holds for any finite $S$. Most correctness experiments here
+use seven points on a single factor with non-negative loadings; E8 repeats E1's
+check on seventeen scenarios with two factors, loadings of both signs and
+idiosyncratic moves, and finds no breach, and E3 additionally times a 16-point
+grid. Nothing here shows that any particular set is adequate for 40 underlyings;
+that is a calibration question, and its evidence is not in this document. What
+is shown is that the decomposition, the closure and the lifecycle are correct
+for whatever finite $S$ is picked.
 
 **The partition is by gateway, not by symbol.** Two gateways can hold opposite
 positions in the *same* symbol, and those net inside the account, so gross is not

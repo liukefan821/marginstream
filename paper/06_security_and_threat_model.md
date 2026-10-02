@@ -13,60 +13,30 @@
 | Chain ↔ custody | Venue assets. Unchanged from the running case |
 | Operator ↔ ledger | Nothing; no write path. Detection is reconciliation, not prevention |
 
-**The gateway is inside the trusted computing base.** An earlier version of this
-document claimed its blast radius is bounded by the leases it holds. That is
-withdrawn. Nothing downstream re-derives the envelopes: the ordering point checks
-that an admission is the next number for a live, correctly bound lease and that a
-fill matches the terms recorded at admission; it does not recompute the
-worst-fill figures the gateway compared against its ceilings. **A gateway that
-lies about its own envelope arithmetic is believed.**
-
-What a compromised gateway cannot do — each pinned by a test:
-
-- act under a fenced lease, or under a lease id the allocator never minted (t3,
-  t4);
-- use another account's lease, or another holder's, or submit with no
-  authenticated session (t1, t2);
-- commit a liquidation basket under an ingress lease (t5);
-- fill outside the band or above the fee cap recorded at admission, fill in the
-  wrong direction, over-fill, or land the same fill twice (d4–d6);
-- hide an admission, because the ordering point takes only the next sequence
-  number for its lease.
-
-What it can do, stated without softening: **a compromised gateway is bounded by
-neither its ceilings nor its own term.** It can submit arbitrary quantity for
-every account whose lease it holds, and it will not stop at its expiry, because
-the ordering point does not enforce terms — it has no clock it can compare
-against an expiry set elsewhere (ADR-6). A term bounds an *honest* gateway that
-has lost contact. The only thing that stops a dishonest one is a fence
-committing at the ordering point.
-
-So the mechanism bounds the **scope** of the damage — which accounts, which
-authority kind, which holder — and does not bound its **magnitude**. The exposure
-window is detection latency plus fence-commit latency, and nothing in this
-document measures either. Closing this would mean re-deriving
-the envelopes at the ordering point, which puts the per-order margin computation
-back on the single-writer path — the thing §2.2 exists to avoid. That trade is
-not made here; it is the residual.
-
-**The liquidator is inside it too, on its own account.** Its orders are checked
-against the merged account rather than a ceiling (c9), so no ceiling bounds it.
-The non-increase test bounds the *risk* it creates — neither merged envelope may
-rise — but permits unlimited churn, and churn costs execution. Its authority ends
-at the ordering point like any other's, and the barrier refuses to run while it
-is live (t5, l11): containment of duration, not of authority.
-
-**The market-data path** carries no authority in the running case. Here marks set
-equity, the scenario displacements and $G^{+}$, so a wrong value changes how much
-capacity is solved for — weaker than an earlier draft claimed, since the
-admission check reads no market state, but it is the exposure in §6.3 A1.
+The gateway and the liquidator both sit inside the trusted computing base.
+Nothing downstream recomputes a gateway's envelope arithmetic, so a gateway that
+lies about it is believed. Tests show that it still cannot act under a fenced or
+unregistered lease, use another account's or another holder's lease, commit a
+liquidation basket, or record a fill outside the terms set at admission. It is,
+however, bounded by neither its budgets nor its term, because the ordering point
+has no clock with which to enforce a term, and only a fence at the ordering
+point stops it. The mechanism therefore limits which accounts a compromised
+gateway can touch but not how much damage it can do. Closing that gap would put
+the margin calculation back on the single-writer path, which is what §2.2
+exists to avoid. The liquidator is checked against the whole account rather
+than a budget, so it cannot raise the account's risk but can churn it, and the
+barrier refuses to settle while it is live. Appendix F gives the full argument
+and the test behind each claim.
 
 ## 6.2 Who can move money
 
 Three ways, none of them the margin path: a trade, journalled by clearing; a
 deposit or withdrawal, frozen then reviewed then gated then signed once per
 withdrawal ID; and a liquidation or insurance-fund draw, journalled like any
-other posting. No component writes a balance.
+other posting. No component writes a balance. The ceremony scales with the
+amount: withdrawals above a threshold need two-person approval, every operator
+action is itself a journalled, dual-approved command, and cold-wallet signing is
+m-of-n on HSMs, so no single operator and no compromised gateway can move funds.
 
 A withdrawal reduces equity, so outstanding capacity against the old figure must
 stop before funds leave. Two orderings work and differ in latency, not safety:

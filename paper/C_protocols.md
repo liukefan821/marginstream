@@ -15,7 +15,7 @@ decision point that has been tested rather than argued.
    ordering point under `(lease_id, admission_seq)` where `admission_seq` is the
    next number it has used under that lease.
 3. **The ordering point** accepts that pair only if it is the next number for
-   the lease, and only if the lease is not fenced. A retry carrying the same
+   the lease, and only if the lease is not fenced. A gateway resend carrying the same
    payload under the same pair succeeds again and records once; the same pair
    with a different payload is a conflict and records nothing. The gap-free
    sequence is what later lets a seal claim to cover every admission the lease
@@ -49,15 +49,15 @@ decision point that has been tested rather than argued.
    (running case, Part 3 §4).
 
 Step 2 is where this design differs from the running case, and it is a cost we
-state rather than hide: a retry routed through another gateway is a new admission
-attempt at that gateway and may conservatively consume envelope there, though it
-cannot produce a duplicate book action. That consumption is released at the next
-issuance.
+state rather than hide: a client retry, at the same gateway or another, is a new
+admission attempt and may conservatively consume envelope there, though it
+cannot produce a duplicate book action. That consumption is released when the
+duplicate's rejection is recorded at the ordering point, not at the next issuance.
 
 One asymmetry is deliberate and matters later. A cancel *request* releases
 nothing; only an acknowledgement recorded at the ordering point does, because
 until then the order can still fill. That produces two different failures which
-are not the same fact and are tested separately (§5.4).
+are not the same fact and are tested separately (Appendix E.2).
 
 Exactly-once is, as in the running case, end-to-end idempotency layered on
 at-least-once delivery. Nothing in the margin path changes that.

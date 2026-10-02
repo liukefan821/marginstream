@@ -42,10 +42,10 @@ The full nine-step chain is Appendix C.1. Its shape:
   record under one identifier, idempotent on retry; **the matching shard**
   applies a client order ID at most once.
 
-Two costs stated rather than hidden. A retry routed through another gateway is a
-new admission attempt there and may consume envelope, released at the next
-issuance. And a cancel *request* releases nothing; only an acknowledgement
-recorded at the ordering point does, which produces the two failures below.
+Two costs stated rather than hidden. A client retry, through the same gateway or
+another, is a new admission attempt and holds envelope until the duplicate's
+rejection is recorded; a new issuance does not release it. And a cancel *request* releases nothing; only an acknowledgement
+recorded at the ordering point does, which produces the two failures in Appendix E.2.
 
 ## 5.4 Fencing, liquidation and settlement
 
@@ -84,17 +84,15 @@ and the whole basket happened, or none of it did.
 book and, past the account's equity, to the insurance fund. What limits that is
 below, under the waterfall.
 
-### Two ways a cancel fails
+### What a cancel and a delay cost
 
-| Failure | What the log holds | What the settlement must do |
-|---|---|---|
-| Acknowledgement recorded, notification to the gateway lost | the cancel | release the order; only the local view is stale |
-| Matching side never confirmed | nothing | keep the worst-fill reservation and the execution-cost reserve |
-
-Fencing does not help in the second case: it stops new admissions and does
-nothing to a resting order. Both arms of E7 show one order live at the end; the
-settlement figure is `(0, 0, 0)` for the recorded cancel and `(120, 2232, 9)` for
-the unacknowledged one.
+A cancel releases an order only once its acknowledgement is recorded at the
+ordering point. An order the matching side never confirmed keeps its
+reservation, and fencing does not help, because a fence stops new admissions
+and not resting orders. Delay is bounded only in part: the mechanism bounds new
+admissions and the cost of unwinding, but not market drift, which in E6 reaches
+229,708 against execution costs of at most 6,486. Appendix E.2 gives both cases
+with E6's and E7's figures.
 
 ### Releasing capacity afterwards
 
@@ -102,15 +100,6 @@ the unacknowledged one.
 the whole account.** Neither takes a holder's word or a clock: both read the log.
 The barrier has six preconditions, none supplied by the caller (Appendix C.2);
 E7 refuses it while any lease — including the liquidator's — is live.
-
-### What the delay costs
-
-E6 splits the equity change exactly — ending equity = trigger equity + drift −
-slippage − fees, asserted on integers with no tolerance. Across its delay sweep
-execution cost runs 2,522 → 6,486 while market drift runs 16,444 → 229,708. **What
-the mechanism controls — new admissions and the cost of unwinding — is bounded;
-market drift is not.** Without a fence the unwind's cost exceeds its bound by
-1,562. E6's figures are one configuration, one seed, one price path.
 
 ### Below the unwind: venue book, insurance fund, ADL
 
@@ -122,13 +111,27 @@ Designed, not built. Each layer is a decision with a price.
 | Insurance fund | Covers an account's negative ending equity, from the E6 identity. Sized to cover the combined shortfall of the largest accounts under stress moves beyond the scenario set, plus a floor it may not be drawn below | Capital held idle. How many accounts and which stress moves are policy; we give the method and one run, not a calibration |
 | ADL | When a draw would take the fund below its floor, the rest is taken from opposing profitable positions at the bankruptcy price, one record per event | Profitable clients lose part of a position they did not choose to close. It is the last resort because it is the only layer that touches clients who did nothing wrong |
 
-### A flash crash (E9)
+### A flash crash
 
-Session 3's flash-crash tabletop gives the shape — a fall past anything the risk
-model covers, a symbol breaker, a halt and an auction reopen, liquidation under
-stress. It does not give magnitudes, so E9 picks its own and runs the same
-distance, 3.4 widest scenario steps, twice: as a **gap** over three ticks and as
-a **slide** over ten. Five long accounts with 950,000 of collateral between them,
+Session 3's timeline (slide 29) is our test vector. The table maps each event to
+MarginStream's response and whether it is tested or design only; since the
+slide's timings are illustrative, E9 keeps its own clock in ticks.
+
+| Time | Event | MarginStream response | Evidence |
+|---|---|---|---|
+| T+0s | Price −4% elsewhere | Mark follows within a few publishes. 4% is inside the scenario set (20% on symbol A), so budgets stay safe and nothing is liquidated | Tested (E1, E8). Mark pipeline: design only |
+| T+2s | Orders ×20, cancels ×40 | Admission is local and flat in live orders. ≈ 2M/s exceeds the 1M/s burst target, so gateways shed the excess (T+8s). A cancel frees budget only once recorded at the ordering point | Tested: scaling (E3), cancels (E7). Throughput: not measured |
+| T+5s | Market-data fan-out saturates | Client data is conflated; the allocator's mark feed is separate and never conflated | Design only |
+| T+8s | Retry storm | Gateways accept up to their share of the 1M/s burst and refuse the rest with a jittered back-off hint; a refusal changes no state. A gateway resending the same submission is applied once at the ordering point. A client retry, at any gateway, is a new admission that holds budget until its rejection is recorded, and matching applies the client order ID at most once | Tested: gateway resend. Client-retry dedup: cited, not simulated. Shedding: design only |
+| T+12s | Liquidations sell into thin book | The venue takes positions in atomic basket transfers at the mark (half per tick in E9), keeping forced selling out of the book. Selling is deferred, not removed: the venue book unwinds later under a volume cap | Tested: transfers (E9), cost identity (E6). Venue-book unwind: design only |
+| T+15s | Breaker, 10% / 60 s | Trips at half the widest scenario step: 10% on symbol A (4% on B, whose range is narrower). Halts matching, admissions and the liquidator | Tested (E9): threshold. Duration: not modelled |
+| T+45s | Call-auction reopen | Budgets re-issued at the auction price. E9 assumes two reopen prices, 60% recovered and at the low | Tested: liquidation at assumed price. Re-issuance, auction: design only |
+| T+60s | Clearing 40 s behind | Balances lag but stay correct as a fold of the log. Admission never reads them; a withdrawal waits for the ledger to catch up | Design only |
+
+A 4% fall inside the scenario set triggers no liquidation and so tests nothing
+below the account. E9 therefore drives a far larger fall, 3.4 widest scenario
+steps (68% on symbol A), twice: as a **gap** over three ticks and as a
+**slide** over ten. Five long accounts with 950,000 of collateral between them,
 a fund of 100,000 and a floor of 20,000. Two reopen prices are run, because the
 value of a halt depends on where the auction clears and the run cannot know that.
 
@@ -147,9 +150,8 @@ sign of a move. And in this configuration a fund of about 235,000 — a quarter 
 the collateral — would have avoided ADL in every arm; that is one run's figure,
 not a sizing rule. The E6 identity holds in every liquidated account.
 
-What E9 does not model: market-data conflation, reconnect storms and gateway
-overload during the crash, which are load problems in front of the design rather
-than inside it.
+The simulator measures neither throughput nor latency under the ×20 load; the
+overload rows above are design, not results.
 
 ## 5.5 Recovery-time arithmetic
 
@@ -168,10 +170,8 @@ The one figure that can be checked from this document is the replay volume:
     at an assumed 10x live replay rate, the log tail takes about 30 s,
     excluding snapshot fetch and leader election.
 
-Two caveats the arithmetic does not carry: 21 MB/s is a lower bound, counting
-order commands and lease inputs but not fills, cancels, fences, baskets, framing
-or any replication factor; and the 10× replay rate is **assumed**, not measured
-(§8.1).
+The 21 MB/s is a lower bound that excludes fills, cancels, fences, baskets,
+framing and replication, and the 10× replay rate is assumed, not measured (§8.1).
 
 **Warm failover is a design target, not a result.** Neither replication nor
 leader election is implemented (§5.7). What *is* established is the property
@@ -228,3 +228,7 @@ The waterfall below the unwind, the allocator failover protocol and the
 mark-price pipeline are designed and not built; E9 exercises the waterfall's
 arithmetic in simulation. The replay rate of §5.5 is assumed, and cross-datacentre
 replication is not covered.
+Two overload responses in §5.4 are designed and not built either: gateways
+shedding orders beyond their share of the burst with a back-off hint, and
+withdrawals waiting until the ledger has caught up with the account's latest
+fill.

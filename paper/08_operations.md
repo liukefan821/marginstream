@@ -5,17 +5,14 @@
 **Measure the replay rate**, because §5.5 assumes it at ten times live and
 nothing else in that arithmetic is assumed. Cold-start a node from a snapshot
 plus five minutes of log, time the rebuild, and compare the state hash against
-the live node — the comparison E4 makes 3,642 times. At or above 10× the
-five-minute snapshot cadence stands; at 2× it tightens to about a minute and
-nothing else moves, because a snapshot bounds replay time rather than
+the live node — the comparison E4 makes 3,642 times. A slower rate only
+shortens the snapshot cadence, since a snapshot bounds replay time, not
 correctness.
 
 **Second: partition a gateway from the allocator while it stays connected to the
 ordering point**, and hold it past its term. This is the failure §3.3 is about.
 What should be observable is the gateway admitting inside its ceilings until the
 term ends and then admitting nothing at all, closing orders included.
-Partitioning a gateway from the *ordering point* tests nothing about margin: no
-order reaches a book at all.
 
 **Third: fence an account's leases without telling any gateway** and confirm the
 ordering point refuses what follows. E7 counts 50 refusals in simulation; in a
@@ -55,12 +52,10 @@ unreachable ones. To bind faster, fence the affected leases.
 **Liquidation** is venue-initiated. The operator decides when to trigger, how
 aggressively to unwind, and whether to accept a stall: the unwind halves its
 basket fraction on a failed check and stops at one lot rather than forcing a
-reduction that would raise the requirement. A stall is a signal to widen the
-basket, not to push.
+reduction that would raise the requirement.
 
 **Halt and reopen.** Cancels accepted, no new orders. On reopen, ceilings are
-re-issued against post-auction marks before order entry resumes, because the
-auction can move equity by more than the grid covers.
+re-issued against post-auction marks before order entry resumes.
 
 **After.** Reconcile per §4.5, and confirm every account that entered liquidation
 reached a barrier: fenced but never settled is the state that silently costs
@@ -68,13 +63,9 @@ capacity.
 
 ## 8.4 What operations cannot do
 
-- **Grant capacity by hand.** It comes from the condition of §2.2 or not at all.
-- **Recall a lease from an unreachable gateway.** Fencing stops what it can still
-  do; it does not remove what it already did.
-- **Release an account's occupancy without a barrier** — not by clock, not by a
-  holder's report, not by an operator's judgement that the holder is gone.
-- **Write to the ledger.** Corrections are journalled, dual-approved commands.
-
-The middle two look like an operator denied a manual override mid-incident. Both
-were tried and produced c8, c11 and c12: an operator who can declare a holder
-finished can hand its capacity to a replacement while it is still trading.
+Operations cannot grant capacity by hand, recall what an unreachable gateway has
+already admitted, release an account's occupancy without a barrier, or write to
+the ledger, where corrections are journalled, dual-approved commands. The middle
+two were tried as manual overrides and produced c8, c11 and c12: an operator who
+could declare a holder finished handed its capacity to a replacement while the
+holder was still trading.

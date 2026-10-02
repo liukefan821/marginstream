@@ -32,12 +32,19 @@ relative to a spot venue: a derivatives venue carries positions it marks every
 tick, pays funding between clients, takes positions onto its own book in a
 liquidation, and keeps a fund to absorb what an account cannot.
 
-Signs follow each account's normal balance — user and asset accounts debit, venue
-liabilities credit — and an entry's postings sum to zero once signs are applied.
-`EXTERNAL_SETTLEMENT` is a clearing account: value leaving the venue reduces both
-a liability and an asset, which is two debits and does not net, so it is booked
-in two entries that each sum to zero. An earlier version wrote it as one entry
-and violated its own rule.
+The ledger is the venue's own books. Every posting is a debit or a credit, and an
+entry is valid only if its debits equal its credits in each asset. The venue's
+wallets, `EXCHANGE_HOT` and `EXCHANGE_COLD`, are assets and normally carry a
+debit balance. Every `USER_` account is money the venue owes a client, so it is
+a liability with a normal credit balance, and the venue's own accounts,
+`EXCHANGE_FEE`, `INSURANCE_FUND` and `VENUE_BOOK`, are credit-normal as well.
+`SUSPENSE`, `EXTERNAL_SETTLEMENT` and `FUNDING_CLEARING` are transit accounts that
+return to zero. A client's equity is therefore the combined credit balance of
+`USER_AVAILABLE`, `USER_MARGIN_HOLD` and `USER_UNREALISED`, which matches the
+simulator's collateral plus PnL at marks, less fees. Paying out a withdrawal
+lowers a liability, which is a debit, and an asset, which is a credit, so one
+entry balances; an earlier version called this "two debits" and split it in two,
+which was a sign error rather than a fix.
 
 Amounts are signed 64-bit integers in minimal units with 128-bit intermediates.
 No floats: they break determinism, which is what makes replicas agree and replays
@@ -71,22 +78,26 @@ book's own risk bounded.
 
 ## 4.4 The order lifecycle as journal entries
 
-| Event | Postings |
+Each row is one balanced entry, written Dr (debit) / Cr (credit).
+
+| Event | Entry |
 |---|---|
+| Deposit confirmed | Dr `EXCHANGE_HOT` x / Cr `USER_AVAILABLE` x |
 | Order admitted | None. Admission consumes a budget, which is not money |
-| Position opened by a fill | `USER_AVAILABLE -x` / `USER_MARGIN_HOLD +x`; fee `USER_AVAILABLE -f` / `EXCHANGE_FEE +f` |
-| Mark-to-market (unrealised PnL) | `USER_UNREALISED ±u` against the counterparty's `USER_UNREALISED ∓u`; the two sides sum to zero |
-| Position reduced (realised PnL) | the matching `USER_UNREALISED` is moved into `USER_AVAILABLE`; `USER_MARGIN_HOLD -x` / `USER_AVAILABLE +x` for the released margin |
-| Funding, each interval | payers `USER_AVAILABLE -p` / `FUNDING_CLEARING +p`; receivers `FUNDING_CLEARING -p` / `USER_AVAILABLE +p`; the clearing account is zero after every interval, so the venue is not a party |
-| Liquidation basket | the position moves to `VENUE_BOOK` at the basket price, one entry per basket; a negative ending equity is covered `INSURANCE_FUND -d` / `USER_AVAILABLE +d`, bringing the account to zero |
-| ADL | when the fund would fall below its floor, the uncovered amount is taken from opposing profitable positions: their `USER_UNREALISED` is realised at the bankruptcy price and the difference posted to the defaulted account, one entry per event |
-| Withdrawal requested | `USER_AVAILABLE -x` / `SUSPENSE +x`, after the sequence in §6.2 |
-| Withdrawal confirmed | `SUSPENSE -x` / `EXTERNAL_SETTLEMENT +x`, and `EXTERNAL_SETTLEMENT -x` / `EXCHANGE_HOT -x` when the chain confirms |
+| Fill | Dr `USER_AVAILABLE` / Cr `USER_MARGIN_HOLD` for the rise in requirement; fee Dr `USER_AVAILABLE` f / Cr `EXCHANGE_FEE` f |
+| Mark-to-market | Dr loser's `USER_UNREALISED` u / Cr winner's `USER_UNREALISED` u; `VENUE_BOOK` takes the same entries for positions it holds |
+| Position reduced | A gain moves from unrealised to available, Dr `USER_UNREALISED` / Cr `USER_AVAILABLE` (reversed for a loss), so it is never counted twice; released margin Dr `USER_MARGIN_HOLD` / Cr `USER_AVAILABLE` |
+| Funding | Payer Dr `USER_AVAILABLE` p / Cr `FUNDING_CLEARING` p; receiver Dr `FUNDING_CLEARING` p / Cr `USER_AVAILABLE` p. The clearing account ends each interval at zero, so the venue is not a party |
+| Liquidation basket | One entry per basket: unrealised PnL is realised into `USER_AVAILABLE` and the position passes to `VENUE_BOOK` at the basket price. A negative ending equity is covered Dr `INSURANCE_FUND` d / Cr `USER_AVAILABLE` d, bringing the account to zero |
+| ADL | An opposing profitable position is closed at the bankruptcy price instead of the mark: Dr its `USER_UNREALISED` a / Cr the defaulted account's `USER_AVAILABLE` a, one entry per event |
+| Withdrawal requested | Dr `USER_AVAILABLE` x / Cr `SUSPENSE` x, after the sequence in §6.2 |
+| Withdrawal sent | Dr `EXTERNAL_SETTLEMENT` x / Cr `EXCHANGE_HOT` x |
+| Withdrawal confirmed | Dr `SUSPENSE` x / Cr `EXTERNAL_SETTLEMENT` x. If the chain rejects the transfer, the sent entry is reversed |
 
 The funding interval, the rate formula and the ADL ranking are venue policy and
 are not specified here.
 
-The first row is the one that matters: admission moves nothing, which is what
+The order-admitted row is the one that matters: admission moves nothing, which is what
 lets it run at gateway speed, and why the envelope bound has to be sound — it is
 the only thing between an admitted order and an over-committed balance.
 
@@ -100,8 +111,11 @@ alternative.
 
 Entry IDs are a hash of the trade sequence and leg index, so a replayed trade
 deduplicates. Assert-then-apply is atomic over the accounts touched; the ledger
-is a single-writer partition per asset class; negative balance is a write-time
-assertion. Reconciliation runs continuously: balances recomputed from the journal
+is a single-writer partition per asset class. A client-initiated entry, such as
+a withdrawal, may not take `USER_AVAILABLE` below zero, and that is asserted at
+write time. Entries the venue posts, such as marks, funding and liquidation, may
+leave equity negative; that is the shortfall the liquidation entry covers from
+the insurance fund. Reconciliation runs continuously: balances recomputed from the journal
 against the materialised view, sequence-range checks for gaps and duplicates, hot
 and cold mirrors against chain balances, and every account rebuilt from the log
 against the live ledger — which catches divergence between §4.3's two folds.

@@ -1564,5 +1564,11 @@ Session 3's tabletop gave the shape of the crash, not its magnitudes; the
 magnitudes, the fund and the floor above are chosen here. E9 does not model
 market-data conflation, reconnect storms or gateway overload.
 
+*Correction, 2026-10-01:* the paragraph above is superseded. Session 3's
+timeline does give magnitudes: E9's breaker matches its 10% band on symbol A,
+and its 4% headline move lies inside the grid, so the larger fall here is
+deliberate. §5.4 maps every timeline event, including the load events E9 does
+not model, to a tested or design-only response.
+
 Tests after this round: all eleven files exit 0. E1–E7 were not re-run and their
 result files are unchanged.
